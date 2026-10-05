@@ -1,0 +1,54 @@
+name: Spike windows-input
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-selftest:
+    name: Build & self-test (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/windows-input
+      - name: Build
+        run: cargo build --release --locked --manifest-path spikes/windows-input/Cargo.toml
+      - name: Self-tests
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $exe = "spikes/windows-input/target/release/windows-input.exe"
+          $out = "selftest.txt"
+          function Step($title, [string[]]$a) {
+            "===== $title" | Tee-Object -FilePath $out -Append
+            & $exe @a 2>&1 | Tee-Object -FilePath $out -Append
+            "exit=$LASTEXITCODE" | Tee-Object -FilePath $out -Append
+          }
+          Step "desktop" @("desktop")
+          Step "inject 1000 Hz, pass-through" @("inject", "1000", "5")
+          Step "inject 1000 Hz, swallow" @("inject", "1000", "5", "swallow")
+          Step "rawinput selftest, no hook" @("rawinput", "5", "selftest")
+          Step "rawinput selftest, LL hook swallowing" @("rawinput", "5", "swallow", "selftest")
+          Step "service install" @("service", "install")
+          Step "service start" @("service", "start")
+          Start-Sleep -Seconds 8
+          Step "service stop" @("service", "stop")
+          Start-Sleep -Seconds 2
+          Step "service uninstall" @("service", "uninstall")
+          "===== logs" | Tee-Object -FilePath $out -Append
+          Get-ChildItem "$env:ProgramData\PortalSwitchSpike" -ErrorAction SilentlyContinue |
+            ForEach-Object { "--- $($_.Name)"; Get-Content $_.FullName } |
+            Tee-Object -FilePath $out -Append
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-input-x64
+          path: |
+            spikes/windows-input/target/release/windows-input.exe
+            selftest.txt
+          retention-days: 14
