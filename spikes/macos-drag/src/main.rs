@@ -9,7 +9,7 @@
 //!                          synthetic mouse-down on it starts a native drag carrying a file promise,
 //!                          synthetic drag to (x, y) (global, top-left origin) and mouse-up. Needs
 //!                          Accessibility (run as the signed bundle via run.sh).
-//!   catch <secs>           source-side alternative: a transparent strip on the right screen edge
+//!   catch <secs> [width]   source-side alternative: a transparent strip on the right screen edge
 //!                          registered as a drag destination; any standard drag that reaches the
 //!                          edge is caught and its items logged. Drops on the strip are accepted.
 
@@ -27,7 +27,7 @@ use objc2_app_kit::{
     NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
     NSDraggingSource, NSEvent, NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPasteboard,
     NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSResponder, NSScreen, NSView, NSWindow,
-    NSWindowStyleMask,
+    NSWindowCollectionBehavior, NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSError, NSPoint, NSRect, NSSize, NSString, NSURL, ns_string};
 
@@ -198,6 +198,8 @@ fn detect(secs: u64) {
 
 static MOUSE_UP_MS: AtomicU64 = AtomicU64::new(0);
 static DONE: AtomicBool = AtomicBool::new(false);
+/// Only the synthetic flow ends at the first drop; manual testing runs until the timeout.
+static EXIT_ON_DONE: AtomicBool = AtomicBool::new(false);
 
 define_class!(
     #[unsafe(super(NSObject))]
@@ -384,11 +386,10 @@ impl CatchView {
     }
 }
 
-fn run_catch(mtm: MainThreadMarker, secs: u64) {
+fn run_catch(mtm: MainThreadMarker, secs: u64, width: f64) {
     let app = NSApplication::sharedApplication(mtm);
     app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     let screen = NSScreen::mainScreen(mtm).expect("a main screen").frame();
-    let width = 6.0;
     let frame = NSRect::new(
         NSPoint::new(screen.origin.x + screen.size.width - width, screen.origin.y),
         NSSize::new(width, screen.size.height),
@@ -409,7 +410,15 @@ fn run_catch(mtm: MainThreadMarker, secs: u64) {
     window.setContentView(Some(&view));
     window.setOpaque(false);
     // Nearly transparent but not fully: fully transparent pixels may not be hit-tested.
-    window.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.5, 0.02)));
+    // A wide test band is tinted so the tester can see it; the thin product-like strip is not.
+    let alpha = if width > 10.0 { 0.15 } else { 0.02 };
+    window.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.5, alpha)));
+    // Present on every Space and over full-screen apps, so a Space switch cannot hide it.
+    window.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary,
+    );
     window.setIgnoresMouseEvents(false);
     window.setLevel(25); // status-bar level, above normal windows
     window.orderFrontRegardless();
@@ -481,11 +490,14 @@ fn run_app(mtm: MainThreadMarker, visible: bool, timeout: Duration, driver: Opti
     ));
 
     if let Some(target) = driver {
+        EXIT_ON_DONE.store(true, Ordering::SeqCst);
         std::thread::spawn(move || drive_synthetic_drag(target));
     }
     std::thread::spawn(move || {
         let end = Instant::now() + timeout;
-        while Instant::now() < end && !DONE.load(Ordering::SeqCst) {
+        while Instant::now() < end
+            && !(EXIT_ON_DONE.load(Ordering::SeqCst) && DONE.load(Ordering::SeqCst))
+        {
             std::thread::sleep(Duration::from_millis(50));
         }
         std::thread::sleep(Duration::from_millis(500));
@@ -530,7 +542,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("detect") => detect(num(1, 30.0) as u64),
         Some("drop-window") => run_app(mtm, true, Duration::from_secs(num(1, 60.0) as u64), None),
-        Some("catch") => run_catch(mtm, num(1, 60.0) as u64),
+        Some("catch") => run_catch(mtm, num(1, 60.0) as u64, num(2, 6.0)),
         Some("drop-synthetic") => {
             let target = CGPoint {
                 x: num(1, 200.0),
@@ -539,7 +551,7 @@ fn main() {
             run_app(mtm, false, Duration::from_secs(15), Some(target));
         }
         _ => eprintln!(
-            "usage: macos-drag detect <secs> | catch <secs> | drop-window <secs> | drop-synthetic <x> <y>"
+            "usage: macos-drag detect <secs> | catch <secs> [width] | drop-window <secs> | drop-synthetic <x> <y>"
         ),
     }
 }
