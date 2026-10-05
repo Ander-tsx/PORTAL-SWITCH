@@ -3,6 +3,9 @@
 # Must run as root (pf/dnctl); the spike binaries run as the invoking user.
 # Everything this script changes in pf/dummynet is undone on exit.
 #
+# Caveat: dummynet on loopback proved unreliable for TCP under bulk load (throughput collapse,
+# ~1 ms tick granularity). Prefer measurements on a real network.
+#
 # Usage: sudo spikes/channels/netem-matrix-macos.sh [seconds-per-run]
 set -euo pipefail
 
@@ -32,8 +35,11 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Stock ruleset contains `dummynet-anchor "com.apple/*"`; make sure it is loaded.
-pfctl -q -f /etc/pf.conf
+# The stock ruleset contains `dummynet-anchor "com.apple/*"`. Reload it only when missing:
+# reloading the main ruleset can flush rules the system added at startup.
+if ! pfctl -s dummynet 2>/dev/null | grep -q 'com.apple'; then
+  pfctl -q -f /etc/pf.conf
+fi
 TOKEN="$(pfctl -E 2>&1 | awk '/Token/ { print $3 }')"
 
 # netem <name> <bandwidth Mbit/s> <one-way delay ms> <packet loss ratio>
