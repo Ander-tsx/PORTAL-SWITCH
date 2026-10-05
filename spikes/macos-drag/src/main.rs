@@ -9,6 +9,9 @@
 //!                          synthetic mouse-down on it starts a native drag carrying a file promise,
 //!                          synthetic drag to (x, y) (global, top-left origin) and mouse-up. Needs
 //!                          Accessibility (run as the signed bundle via run.sh).
+//!   catch <secs>           source-side alternative: a transparent strip on the right screen edge
+//!                          registered as a drag destination; any standard drag that reaches the
+//!                          edge is caught and its items logged. Drops on the strip are accepted.
 
 use std::io::Write as _;
 use std::sync::OnceLock;
@@ -21,9 +24,10 @@ use objc2::runtime::{NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSColor, NSDragOperation,
-    NSDraggingContext, NSDraggingItem, NSDraggingSession, NSDraggingSource, NSEvent,
-    NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPasteboard, NSPasteboardNameDrag,
-    NSPasteboardTypeFileURL, NSResponder, NSView, NSWindow, NSWindowStyleMask,
+    NSDraggingContext, NSDraggingDestination, NSDraggingInfo, NSDraggingItem, NSDraggingSession,
+    NSDraggingSource, NSEvent, NSFilePromiseProvider, NSFilePromiseProviderDelegate, NSPasteboard,
+    NSPasteboardNameDrag, NSPasteboardTypeFileURL, NSResponder, NSScreen, NSView, NSWindow,
+    NSWindowStyleMask,
 };
 use objc2_foundation::{NSArray, NSError, NSPoint, NSRect, NSSize, NSString, NSURL, ns_string};
 
@@ -317,6 +321,111 @@ impl SourceView {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// catch: drag destination strip at the screen edge
+// ---------------------------------------------------------------------------------------------
+
+static ENTERED_MS: AtomicU64 = AtomicU64::new(0);
+
+define_class!(
+    #[unsafe(super(NSView, NSResponder, NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "PSCatchView"]
+    struct CatchView;
+
+    unsafe impl NSObjectProtocol for CatchView {}
+
+    unsafe impl NSDraggingDestination for CatchView {
+        #[unsafe(method(draggingEntered:))]
+        fn entered(&self, sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            ENTERED_MS.store((ms() * 1000.0) as u64, Ordering::SeqCst);
+            let items = dragged_items(&sender.draggingPasteboard());
+            let loc = sender.draggingLocation();
+            log(&format!(
+                "catch: drag entered edge at ({:.0}, {:.0}); source allows {:?}; {} file item(s)",
+                loc.x,
+                loc.y,
+                sender.draggingSourceOperationMask(),
+                items.len()
+            ));
+            for i in items {
+                log(&format!("  {i}"));
+            }
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(draggingUpdated:))]
+        fn updated(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) -> NSDragOperation {
+            NSDragOperation::Copy
+        }
+
+        #[unsafe(method(draggingExited:))]
+        fn exited(&self, _sender: Option<&ProtocolObject<dyn NSDraggingInfo>>) {
+            let held = ms() - ENTERED_MS.load(Ordering::SeqCst) as f64 / 1000.0;
+            log(&format!("catch: drag left the edge after {held:.0} ms"));
+        }
+
+        #[unsafe(method(performDragOperation:))]
+        fn perform(&self, _sender: &ProtocolObject<dyn NSDraggingInfo>) -> bool {
+            log("catch: drop on the edge accepted (a KVM would deliver to the other machine here)");
+            true
+        }
+    }
+);
+
+impl CatchView {
+    fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        // SAFETY: NSView designated initializer.
+        let view: Retained<Self> = unsafe { msg_send![Self::alloc(mtm), initWithFrame: frame] };
+        // SAFETY: static pasteboard type constant.
+        let types = NSArray::from_slice(&[unsafe { NSPasteboardTypeFileURL }]);
+        view.registerForDraggedTypes(&types);
+        view
+    }
+}
+
+fn run_catch(mtm: MainThreadMarker, secs: u64) {
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    let screen = NSScreen::mainScreen(mtm).expect("a main screen").frame();
+    let width = 6.0;
+    let frame = NSRect::new(
+        NSPoint::new(screen.origin.x + screen.size.width - width, screen.origin.y),
+        NSSize::new(width, screen.size.height),
+    );
+    // SAFETY: standard window creation on the main thread.
+    let window = unsafe {
+        NSWindow::initWithContentRect_styleMask_backing_defer(
+            NSWindow::alloc(mtm),
+            frame,
+            NSWindowStyleMask::Borderless,
+            NSBackingStoreType::Buffered,
+            false,
+        )
+    };
+    // SAFETY: the window is owned by our Retained.
+    unsafe { window.setReleasedWhenClosed(false) };
+    let view = CatchView::new(mtm, NSRect::new(NSPoint::new(0.0, 0.0), frame.size));
+    window.setContentView(Some(&view));
+    window.setOpaque(false);
+    // Nearly transparent but not fully: fully transparent pixels may not be hit-tested.
+    window.setBackgroundColor(Some(&NSColor::colorWithWhite_alpha(0.5, 0.02)));
+    window.setIgnoresMouseEvents(false);
+    window.setLevel(25); // status-bar level, above normal windows
+    window.orderFrontRegardless();
+    log(&format!(
+        "catch: edge strip ready at x={:.0}..{:.0}; drag files to the right edge for {secs} s",
+        frame.origin.x,
+        frame.origin.x + width
+    ));
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(secs));
+        log("catch: done");
+        std::process::exit(0);
+    });
+    app.run();
+}
+
 fn make_window(mtm: MainThreadMarker, visible: bool) -> Retained<NSWindow> {
     let size = if visible {
         NSSize::new(160.0, 80.0)
@@ -421,6 +530,7 @@ fn main() {
     match args.first().map(String::as_str) {
         Some("detect") => detect(num(1, 30.0) as u64),
         Some("drop-window") => run_app(mtm, true, Duration::from_secs(num(1, 60.0) as u64), None),
+        Some("catch") => run_catch(mtm, num(1, 60.0) as u64),
         Some("drop-synthetic") => {
             let target = CGPoint {
                 x: num(1, 200.0),
@@ -429,7 +539,7 @@ fn main() {
             run_app(mtm, false, Duration::from_secs(15), Some(target));
         }
         _ => eprintln!(
-            "usage: macos-drag detect <secs> | drop-window <secs> | drop-synthetic <x> <y>"
+            "usage: macos-drag detect <secs> | catch <secs> | drop-window <secs> | drop-synthetic <x> <y>"
         ),
     }
 }
