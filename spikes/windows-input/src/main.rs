@@ -11,11 +11,14 @@
 //!   agent                               session agent launched by the service
 //!   typetest <delay>                    after <delay> s, type "xxxxx" from this process
 //!   typetest-agent <delay>              ask the running service agent (SYSTEM) to do the same
+//!   dragcatch <secs>                    OLE drop-target strip on the right edge; logs dragged files
 //!
 //! Logs from the service and agent go to C:\ProgramData\PortalSwitchSpike\.
 
 #[cfg(windows)]
 mod desktop;
+#[cfg(windows)]
+mod dragcatch;
 #[cfg(windows)]
 mod latency;
 #[cfg(windows)]
@@ -36,11 +39,12 @@ fn main() {
         Some("service-main") => service::run_dispatcher(),
         Some("agent") => service::agent(),
         Some("typetest") => typetest(num(1, 5)),
+        Some("dragcatch") => dragcatch::run(num(1, 60)),
         Some("typetest-agent") => typetest_agent(num(1, 5)),
         _ => {
             eprintln!(
                 "usage: windows-input inject <hz> <secs> [swallow] | rawinput <secs> [swallow] [selftest] \
-                 | desktop | service install|uninstall|start|stop | typetest <s> | typetest-agent <s>"
+                 | desktop | service install|uninstall|start|stop | typetest <s> | typetest-agent <s> | dragcatch <s>"
             );
             Ok(String::new())
         }

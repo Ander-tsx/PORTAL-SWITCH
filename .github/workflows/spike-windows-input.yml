@@ -35,6 +35,7 @@ jobs:
           Step "inject 1000 Hz, swallow" @("inject", "1000", "5", "swallow")
           Step "rawinput selftest, no hook" @("rawinput", "5", "selftest")
           Step "rawinput selftest, LL hook swallowing" @("rawinput", "5", "swallow", "selftest")
+          Step "dragcatch (OLE drop target setup only)" @("dragcatch", "2")
           Step "service install" @("service", "install")
           Step "service start" @("service", "start")
           Start-Sleep -Seconds 8

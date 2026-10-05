@@ -98,6 +98,7 @@ name = "windows-input"
 version = "0.0.0"
 dependencies = [
  "windows",
+ "windows-core",
 ]
 
 [[package]]
