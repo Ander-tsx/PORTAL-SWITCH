@@ -1,0 +1,11 @@
+[package]
+name = "macos-input-latency"
+description = "Spike: measure input capture and injection latency on macOS."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: spikes are not part of the product workspace.
+[workspace]
+
+[dependencies]
