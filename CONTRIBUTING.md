@@ -32,7 +32,8 @@ shellcheck dev/*.sh
 
 ## Dependencies
 
-Only permissive licenses are accepted: **MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause**.
+Only permissive licenses are accepted: **MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause**,
+plus **ISC** (equivalent to MIT) and **Unicode-3.0** (Unicode data files).
 No GPL, LGPL, AGPL or other copyleft licenses. `deny.toml` enforces this in CI; if a useful
 crate needs another permissive license, open a discussion before adding it to the allow list.
 

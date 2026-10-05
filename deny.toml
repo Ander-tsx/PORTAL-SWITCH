@@ -16,6 +16,10 @@ allow = [
     "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # Functionally equivalent to MIT (e.g. rustls-webpki).
+    "ISC",
+    # Unicode data files license (e.g. unicode-ident), permissive.
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.93
 unused-allowed-license = "allow"
