@@ -1,0 +1,17 @@
+[package]
+name = "channels"
+description = "Spike: input latency under bulk load for single TCP, dual TCP and QUIC transports."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: spikes are not part of the product workspace.
+[workspace]
+
+[dependencies]
+quinn = { version = "0.11.12", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
+rcgen = { version = "0.14.10", default-features = false, features = ["ring", "crypto"] }
+rustls = { version = "0.23.45", default-features = false, features = ["ring", "std"] }
+socket2 = { version = "0.6.5", features = ["all"] }
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring"] }
