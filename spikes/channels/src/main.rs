@@ -2,7 +2,7 @@
 //!
 //!   channels server [--bind 0.0.0.0:47000]
 //!   channels client --connect HOST:47000 --transport tcp1|tcp2|quic
-//!                   [--rate 1000] [--secs 10] [--bulk none|saturate] [--mss N] [--label TEXT]
+//!                   [--rate 1000] [--secs 10] [--bulk none|saturate|reverse] [--mss N] [--label TEXT]
 //!
 //! tcp1: one TCP+TLS connection carrying probes and bulk through one FIFO writer (baseline).
 //! tcp2: control and bulk on separate TCP+TLS connections.
@@ -36,6 +36,8 @@ const ALPN: &[u8] = b"portalswitch-spike";
 const ROLE_SINGLE: u8 = 1;
 const ROLE_CONTROL: u8 = 2;
 const ROLE_BULK: u8 = 3;
+const ROLE_BULK_REVERSE: u8 = 4;
+const ROLE_SINGLE_REVERSE: u8 = 5;
 
 // ---------------------------------------------------------------------------------------------
 // TLS
@@ -151,19 +153,36 @@ async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Resul
 // Server
 // ---------------------------------------------------------------------------------------------
 
-/// Echoes probe frames, discards everything else.
-async fn serve_control<R, W>(mut r: R, mut w: W) -> Result<()>
+/// Echoes probe frames, discards everything else. With `reverse_bulk`, the server also streams
+/// bulk chunks back through the same FIFO writer (single-connection baseline, reverse direction).
+async fn serve_control<R, W>(mut r: R, w: W, reverse_bulk: bool) -> Result<()>
 where
     R: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
+    W: AsyncWrite + Unpin + Send + 'static,
 {
+    let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
+    tokio::spawn(writer(w, rx));
+    if reverse_bulk {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let chunk = frame(CHUNK, &vec![0x5Au8; CHUNK_SIZE]);
+            while tx.send(chunk.clone()).await.is_ok() {}
+        });
+    }
     let mut buf = Vec::new();
     loop {
         let kind = read_frame(&mut r, &mut buf).await?;
         if kind == PROBE {
-            w.write_all(&frame(PROBE, &buf)).await?;
-            w.flush().await?;
+            tx.send(frame(PROBE, &buf)).await?;
         }
+    }
+}
+
+/// Streams bulk chunks until the peer goes away.
+async fn send_bulk<W: AsyncWrite + Unpin>(mut w: W) -> Result<()> {
+    let chunk = frame(CHUNK, &vec![0x5Au8; CHUNK_SIZE]);
+    loop {
+        w.write_all(&chunk).await?;
     }
 }
 
@@ -179,7 +198,8 @@ async fn server(bind: SocketAddr) -> Result<()> {
     let listener = TcpListener::bind(bind).await?;
 
     let quic_cfg = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
-    let endpoint = quinn::Endpoint::server(quinn::ServerConfig::with_crypto(Arc::new(quic_cfg)), bind)?;
+    let endpoint =
+        quinn::Endpoint::server(quinn::ServerConfig::with_crypto(Arc::new(quic_cfg)), bind)?;
     eprintln!("listening on tcp+udp {bind}");
 
     tokio::spawn(async move {
@@ -192,8 +212,14 @@ async fn server(bind: SocketAddr) -> Result<()> {
                         tokio::spawn(drain(r));
                     }
                 });
-                while let Ok((s, r)) = conn.accept_bi().await {
-                    tokio::spawn(serve_control(r, s));
+                while let Ok((s, mut r)) = conn.accept_bi().await {
+                    tokio::spawn(async move {
+                        match r.read_u8().await? {
+                            ROLE_CONTROL => serve_control(r, s, false).await,
+                            ROLE_BULK_REVERSE => send_bulk(s).await,
+                            other => Err(format!("unknown stream role {other}").into()),
+                        }
+                    });
                 }
                 Ok::<_, BoxError>(())
             });
@@ -208,11 +234,12 @@ async fn server(bind: SocketAddr) -> Result<()> {
             let mut tls = acceptor.accept(sock).await?;
             let role = tls.read_u8().await?;
             match role {
-                ROLE_SINGLE | ROLE_CONTROL => {
+                ROLE_SINGLE | ROLE_CONTROL | ROLE_SINGLE_REVERSE => {
                     let (r, w) = tokio::io::split(tls);
-                    serve_control(r, w).await
+                    serve_control(r, w, role == ROLE_SINGLE_REVERSE).await
                 }
                 ROLE_BULK => drain(tls).await,
+                ROLE_BULK_REVERSE => send_bulk(tls).await,
                 other => Err(format!("unknown role {other}").into()),
             }
         });
@@ -230,12 +257,21 @@ enum Transport {
     Quic,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Bulk {
+    None,
+    /// client -> server, same direction as input
+    Saturate,
+    /// server -> client, opposite to input
+    Reverse,
+}
+
 struct Args {
     connect: SocketAddr,
     transport: Transport,
     rate: u64,
     secs: u64,
-    bulk: bool,
+    bulk: Bulk,
     mss: Option<u32>,
     label: String,
 }
@@ -257,20 +293,22 @@ async fn tcp_connect(addr: SocketAddr, mss: Option<u32>) -> Result<TcpStream> {
     )?;
     sock.set_tcp_nodelay(true)?;
     sock.connect(&addr.into())?;
+    #[cfg(not(windows))]
     if let Some(m) = mss {
         sock.set_tcp_mss(m)?;
     }
+    #[cfg(windows)]
+    let _ = mss;
     sock.set_nonblocking(true)?;
     Ok(TcpStream::from_std(sock.into())?)
 }
 
-async fn tls_connect(
-    a: &Args,
-    role: u8,
-) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+async fn tls_connect(a: &Args, role: u8) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
     let tcp = tcp_connect(a.connect, a.mss).await?;
     let connector = tokio_rustls::TlsConnector::from(Arc::new(client_tls()?));
-    let mut tls = connector.connect(ServerName::try_from("portalswitch")?, tcp).await?;
+    let mut tls = connector
+        .connect(ServerName::try_from("portalswitch")?, tcp)
+        .await?;
     tls.write_u8(role).await?;
     tls.flush().await?;
     Ok(tls)
@@ -281,6 +319,10 @@ async fn read_echoes<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<
     let mut buf = Vec::new();
     loop {
         let kind = read_frame(&mut r, &mut buf).await?;
+        if kind == CHUNK && sh.measuring.load(Ordering::Relaxed) {
+            sh.bulk_bytes
+                .fetch_add(buf.len() as u64 + 6, Ordering::Relaxed);
+        }
         if kind == PROBE && buf.len() >= 12 {
             let now = u64::try_from(sh.start.elapsed().as_nanos())?;
             let t = u64::from_le_bytes(buf[4..12].try_into()?);
@@ -310,7 +352,22 @@ async fn bulk_into_queue(tx: mpsc::Sender<Vec<u8>>, sh: Arc<Shared>) {
             break;
         }
         if sh.measuring.load(Ordering::Relaxed) {
-            sh.bulk_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            sh.bulk_bytes
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
+    }
+}
+
+/// Reads raw bulk bytes sent by the server and counts them.
+async fn count_drain<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<()> {
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = r.read(&mut buf).await?;
+        if n == 0 {
+            return Ok(());
+        }
+        if sh.measuring.load(Ordering::Relaxed) {
+            sh.bulk_bytes.fetch_add(n as u64, Ordering::Relaxed);
         }
     }
 }
@@ -320,7 +377,8 @@ async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>) -> Result
     while !sh.stop.load(Ordering::Relaxed) {
         w.write_all(&chunk).await?;
         if sh.measuring.load(Ordering::Relaxed) {
-            sh.bulk_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
+            sh.bulk_bytes
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
         }
     }
     Ok(())
@@ -342,7 +400,12 @@ async fn client(a: Args) -> Result<String> {
 
     match a.transport {
         Transport::Tcp1 => {
-            let (r, w) = tokio::io::split(tls_connect(&a, ROLE_SINGLE).await?);
+            let role = if a.bulk == Bulk::Reverse {
+                ROLE_SINGLE_REVERSE
+            } else {
+                ROLE_SINGLE
+            };
+            let (r, w) = tokio::io::split(tls_connect(&a, role).await?);
             tokio::spawn(read_echoes(r, sh.clone()));
             // Single FIFO shared by probes and bulk: the naive design.
             let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
@@ -356,7 +419,7 @@ async fn client(a: Args) -> Result<String> {
                     }
                 }
             });
-            if a.bulk {
+            if a.bulk == Bulk::Saturate {
                 tokio::spawn(bulk_into_queue(tx, sh.clone()));
             }
         }
@@ -364,9 +427,16 @@ async fn client(a: Args) -> Result<String> {
             let (r, w) = tokio::io::split(tls_connect(&a, ROLE_CONTROL).await?);
             tokio::spawn(read_echoes(r, sh.clone()));
             tokio::spawn(writer(w, ctl_rx));
-            if a.bulk {
-                let bulk = tls_connect(&a, ROLE_BULK).await?;
-                tokio::spawn(bulk_direct(bulk, sh.clone()));
+            match a.bulk {
+                Bulk::Saturate => {
+                    let bulk = tls_connect(&a, ROLE_BULK).await?;
+                    tokio::spawn(bulk_direct(bulk, sh.clone()));
+                }
+                Bulk::Reverse => {
+                    let bulk = tls_connect(&a, ROLE_BULK_REVERSE).await?;
+                    tokio::spawn(count_drain(bulk, sh.clone()));
+                }
+                Bulk::None => {}
             }
         }
         Transport::Quic => {
@@ -374,14 +444,25 @@ async fn client(a: Args) -> Result<String> {
             let mut ep = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
             ep.set_default_client_config(quinn::ClientConfig::new(Arc::new(qcfg)));
             let conn = ep.connect(a.connect, "portalswitch")?.await?;
-            let (s, r) = conn.open_bi().await?;
+            let (mut s, r) = conn.open_bi().await?;
             s.set_priority(100)?;
+            s.write_all(&[ROLE_CONTROL]).await?;
             tokio::spawn(read_echoes(r, sh.clone()));
             tokio::spawn(writer(s, ctl_rx));
-            if a.bulk {
-                let u = conn.open_uni().await?;
-                u.set_priority(0)?;
-                tokio::spawn(bulk_direct(u, sh.clone()));
+            match a.bulk {
+                Bulk::Saturate => {
+                    let u = conn.open_uni().await?;
+                    u.set_priority(0)?;
+                    tokio::spawn(bulk_direct(u, sh.clone()));
+                }
+                Bulk::Reverse => {
+                    let (mut bs, br) = conn.open_bi().await?;
+                    bs.write_all(&[ROLE_BULK_REVERSE]).await?;
+                    tokio::spawn(count_drain(br, sh.clone()));
+                    // Keep the send half alive for the duration of the run.
+                    std::mem::forget(bs);
+                }
+                Bulk::None => {}
             }
             _quic_keepalive = Some((ep, conn));
         }
@@ -395,7 +476,12 @@ async fn client(a: Args) -> Result<String> {
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let n = a.rate * a.secs;
+    // Wall-clock cap: a blocked shared queue (tcp1) must not stretch a run indefinitely.
+    let cap = Duration::from_secs(a.secs * 4);
     for i in 0..n {
+        if measure_start.elapsed() > cap {
+            break;
+        }
         tick.tick().await;
         let t = u64::try_from(sh.start.elapsed().as_nanos())?;
         // High bit marks measured probes.
@@ -421,7 +507,7 @@ async fn client(a: Args) -> Result<String> {
     let sent = sh.sent.load(Ordering::Relaxed);
     let mbps = sh.bulk_bytes.load(Ordering::Relaxed) as f64 * 8.0 / elapsed / 1e6;
     Ok(format!(
-        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":{},\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0}}}",
+        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":\"{:?}\",\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0}}}",
         a.label,
         a.transport,
         a.bulk,
@@ -443,7 +529,10 @@ async fn client(a: Args) -> Result<String> {
 // ---------------------------------------------------------------------------------------------
 
 fn opt<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
 }
 
 #[tokio::main]
@@ -462,11 +551,18 @@ async fn main() -> Result<()> {
                 other => return Err(format!("unknown transport {other}").into()),
             };
             let a = Args {
-                connect: opt(&args, "--connect").ok_or("--connect required")?.parse()?,
+                connect: opt(&args, "--connect")
+                    .ok_or("--connect required")?
+                    .parse()?,
                 transport,
                 rate: opt(&args, "--rate").unwrap_or("1000").parse()?,
                 secs: opt(&args, "--secs").unwrap_or("10").parse()?,
-                bulk: opt(&args, "--bulk").unwrap_or("none") == "saturate",
+                bulk: match opt(&args, "--bulk").unwrap_or("none") {
+                    "none" => Bulk::None,
+                    "saturate" => Bulk::Saturate,
+                    "reverse" => Bulk::Reverse,
+                    other => return Err(format!("unknown bulk mode {other}").into()),
+                },
                 mss: opt(&args, "--mss").map(str::parse).transpose()?,
                 label: opt(&args, "--label").unwrap_or("").to_string(),
             };
@@ -474,7 +570,9 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!("usage: channels server [--bind ADDR] | channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N] [--bulk none|saturate] [--mss N] [--label TEXT]");
+            eprintln!(
+                "usage: channels server [--bind ADDR] | channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N] [--bulk none|saturate|reverse] [--mss N] [--label TEXT]"
+            );
             Ok(())
         }
     }

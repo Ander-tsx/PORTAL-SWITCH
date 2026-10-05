@@ -1,0 +1,26 @@
+name: Spike artifacts
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  channels-windows:
+    name: channels (Windows x64)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: spikes/channels
+      - name: Build
+        run: cargo build --release --locked --manifest-path spikes/channels/Cargo.toml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: channels-windows-x64
+          path: spikes/channels/target/release/channels.exe
+          retention-days: 14
