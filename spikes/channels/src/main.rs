@@ -2,7 +2,7 @@
 //!
 //!   channels server [--bind 0.0.0.0:47000]
 //!   channels client --connect HOST:47000 --transport tcp1|tcp2|quic
-//!                   [--rate 1000] [--secs 10] [--bulk none|saturate|reverse] [--mss N] [--label TEXT]
+//!                   [--rate 1000] [--secs 10] [--bulk none|saturate|reverse] [--bulk-rate MBPS] [--cc cubic|bbr] [--mss N] [--label TEXT]
 //!
 //! tcp1: one TCP+TLS connection carrying probes and bulk through one FIFO writer (baseline).
 //! tcp2: control and bulk on separate TCP+TLS connections.
@@ -149,6 +149,53 @@ async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Resul
     Ok(kind)
 }
 
+/// Paces writes to a fixed rate (0 = unlimited) by sleeping until the byte budget allows them.
+struct Pacer {
+    start: Instant,
+    bytes: u64,
+    rate_bps: f64,
+}
+
+const PACE_SLICE: usize = 16 * 1024;
+
+impl Pacer {
+    fn new(rate_mbps: u32) -> Self {
+        Self {
+            start: Instant::now(),
+            bytes: 0,
+            rate_bps: f64::from(rate_mbps) * 1e6,
+        }
+    }
+
+    async fn write<W: AsyncWrite + Unpin>(&mut self, w: &mut W, data: &[u8]) -> Result<()> {
+        if self.rate_bps == 0.0 {
+            w.write_all(data).await?;
+            return Ok(());
+        }
+        for part in data.chunks(PACE_SLICE) {
+            self.bytes += part.len() as u64;
+            let due = self.start + Duration::from_secs_f64(self.bytes as f64 * 8.0 / self.rate_bps);
+            tokio::time::sleep_until(due.into()).await;
+            w.write_all(part).await?;
+        }
+        Ok(())
+    }
+}
+
+fn transport_config(cc: Cc) -> quinn::TransportConfig {
+    let mut tc = quinn::TransportConfig::default();
+    if cc == Cc::Bbr {
+        tc.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    }
+    tc
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cc {
+    Cubic,
+    Bbr,
+}
+
 // ---------------------------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------------------------
@@ -178,11 +225,12 @@ where
     }
 }
 
-/// Streams bulk chunks until the peer goes away.
-async fn send_bulk<W: AsyncWrite + Unpin>(mut w: W) -> Result<()> {
+/// Streams bulk chunks at `rate_mbps` (0 = unlimited) until the peer goes away.
+async fn send_bulk<W: AsyncWrite + Unpin>(mut w: W, rate_mbps: u32) -> Result<()> {
     let chunk = frame(CHUNK, &vec![0x5Au8; CHUNK_SIZE]);
+    let mut pacer = Pacer::new(rate_mbps);
     loop {
-        w.write_all(&chunk).await?;
+        pacer.write(&mut w, &chunk).await?;
     }
 }
 
@@ -197,34 +245,18 @@ async fn server(bind: SocketAddr) -> Result<()> {
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls.clone()));
     let listener = TcpListener::bind(bind).await?;
 
-    let quic_cfg = quinn::crypto::rustls::QuicServerConfig::try_from(tls)?;
-    let endpoint =
-        quinn::Endpoint::server(quinn::ServerConfig::with_crypto(Arc::new(quic_cfg)), bind)?;
-    eprintln!("listening on tcp+udp {bind}");
-
-    tokio::spawn(async move {
-        while let Some(incoming) = endpoint.accept().await {
-            tokio::spawn(async move {
-                let conn = incoming.await?;
-                let c2 = conn.clone();
-                tokio::spawn(async move {
-                    while let Ok(r) = c2.accept_uni().await {
-                        tokio::spawn(drain(r));
-                    }
-                });
-                while let Ok((s, mut r)) = conn.accept_bi().await {
-                    tokio::spawn(async move {
-                        match r.read_u8().await? {
-                            ROLE_CONTROL => serve_control(r, s, false).await,
-                            ROLE_BULK_REVERSE => send_bulk(s).await,
-                            other => Err(format!("unknown stream role {other}").into()),
-                        }
-                    });
-                }
-                Ok::<_, BoxError>(())
-            });
-        }
-    });
+    // QUIC: Cubic on the base port, BBR on base port + 1.
+    for (cc, port) in [(Cc::Cubic, bind.port()), (Cc::Bbr, bind.port() + 1)] {
+        let quic_cfg = quinn::crypto::rustls::QuicServerConfig::try_from(tls.clone())?;
+        let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_cfg));
+        cfg.transport_config(Arc::new(transport_config(cc)));
+        let endpoint = quinn::Endpoint::server(cfg, SocketAddr::new(bind.ip(), port))?;
+        spawn_quic_server(endpoint);
+    }
+    eprintln!(
+        "listening on tcp {bind}, udp {bind} (quic cubic), udp port {} (quic bbr)",
+        bind.port() + 1
+    );
 
     loop {
         let (sock, _) = listener.accept().await?;
@@ -239,11 +271,43 @@ async fn server(bind: SocketAddr) -> Result<()> {
                     serve_control(r, w, role == ROLE_SINGLE_REVERSE).await
                 }
                 ROLE_BULK => drain(tls).await,
-                ROLE_BULK_REVERSE => send_bulk(tls).await,
+                ROLE_BULK_REVERSE => {
+                    let rate = tls.read_u32_le().await?;
+                    send_bulk(tls, rate).await
+                }
                 other => Err(format!("unknown role {other}").into()),
             }
         });
     }
+}
+
+fn spawn_quic_server(endpoint: quinn::Endpoint) {
+    tokio::spawn(async move {
+        while let Some(incoming) = endpoint.accept().await {
+            tokio::spawn(async move {
+                let conn = incoming.await?;
+                let c2 = conn.clone();
+                tokio::spawn(async move {
+                    while let Ok(r) = c2.accept_uni().await {
+                        tokio::spawn(drain(r));
+                    }
+                });
+                while let Ok((s, mut r)) = conn.accept_bi().await {
+                    tokio::spawn(async move {
+                        match r.read_u8().await? {
+                            ROLE_CONTROL => serve_control(r, s, false).await,
+                            ROLE_BULK_REVERSE => {
+                                let rate = r.read_u32_le().await?;
+                                send_bulk(s, rate).await
+                            }
+                            other => Err(format!("unknown stream role {other}").into()),
+                        }
+                    });
+                }
+                Ok::<_, BoxError>(())
+            });
+        }
+    });
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -272,6 +336,8 @@ struct Args {
     rate: u64,
     secs: u64,
     bulk: Bulk,
+    bulk_rate: u32,
+    cc: Cc,
     mss: Option<u32>,
     label: String,
 }
@@ -372,10 +438,11 @@ async fn count_drain<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<
     }
 }
 
-async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>) -> Result<()> {
+async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>, rate: u32) -> Result<()> {
     let chunk = frame(CHUNK, &vec![0xA5u8; CHUNK_SIZE]);
+    let mut pacer = Pacer::new(rate);
     while !sh.stop.load(Ordering::Relaxed) {
-        w.write_all(&chunk).await?;
+        pacer.write(&mut w, &chunk).await?;
         if sh.measuring.load(Ordering::Relaxed) {
             sh.bulk_bytes
                 .fetch_add(chunk.len() as u64, Ordering::Relaxed);
@@ -430,10 +497,12 @@ async fn client(a: Args) -> Result<String> {
             match a.bulk {
                 Bulk::Saturate => {
                     let bulk = tls_connect(&a, ROLE_BULK).await?;
-                    tokio::spawn(bulk_direct(bulk, sh.clone()));
+                    tokio::spawn(bulk_direct(bulk, sh.clone(), a.bulk_rate));
                 }
                 Bulk::Reverse => {
-                    let bulk = tls_connect(&a, ROLE_BULK_REVERSE).await?;
+                    let mut bulk = tls_connect(&a, ROLE_BULK_REVERSE).await?;
+                    bulk.write_u32_le(a.bulk_rate).await?;
+                    bulk.flush().await?;
                     tokio::spawn(count_drain(bulk, sh.clone()));
                 }
                 Bulk::None => {}
@@ -441,9 +510,15 @@ async fn client(a: Args) -> Result<String> {
         }
         Transport::Quic => {
             let qcfg = quinn::crypto::rustls::QuicClientConfig::try_from(client_tls()?)?;
+            let mut ccfg = quinn::ClientConfig::new(Arc::new(qcfg));
+            ccfg.transport_config(Arc::new(transport_config(a.cc)));
             let mut ep = quinn::Endpoint::client("0.0.0.0:0".parse()?)?;
-            ep.set_default_client_config(quinn::ClientConfig::new(Arc::new(qcfg)));
-            let conn = ep.connect(a.connect, "portalswitch")?.await?;
+            ep.set_default_client_config(ccfg);
+            let mut target = a.connect;
+            if a.cc == Cc::Bbr {
+                target.set_port(target.port() + 1);
+            }
+            let conn = ep.connect(target, "portalswitch")?.await?;
             let (mut s, r) = conn.open_bi().await?;
             s.set_priority(100)?;
             s.write_all(&[ROLE_CONTROL]).await?;
@@ -453,11 +528,12 @@ async fn client(a: Args) -> Result<String> {
                 Bulk::Saturate => {
                     let u = conn.open_uni().await?;
                     u.set_priority(0)?;
-                    tokio::spawn(bulk_direct(u, sh.clone()));
+                    tokio::spawn(bulk_direct(u, sh.clone(), a.bulk_rate));
                 }
                 Bulk::Reverse => {
                     let (mut bs, br) = conn.open_bi().await?;
                     bs.write_all(&[ROLE_BULK_REVERSE]).await?;
+                    bs.write_all(&a.bulk_rate.to_le_bytes()).await?;
                     tokio::spawn(count_drain(br, sh.clone()));
                     // Keep the send half alive for the duration of the run.
                     std::mem::forget(bs);
@@ -494,6 +570,11 @@ async fn client(a: Args) -> Result<String> {
     sh.stop.store(true, Ordering::Relaxed);
     // Grace period for in-flight echoes.
     tokio::time::sleep(Duration::from_secs(3)).await;
+    // Close QUIC explicitly so the server stops sending before the next run starts.
+    if let Some((ep, conn)) = _quic_keepalive.take() {
+        conn.close(0u32.into(), b"done");
+        let _ = tokio::time::timeout(Duration::from_secs(2), ep.wait_idle()).await;
+    }
 
     let mut v = sh.rtts.lock().unwrap().clone();
     v.sort_unstable();
@@ -507,10 +588,12 @@ async fn client(a: Args) -> Result<String> {
     let sent = sh.sent.load(Ordering::Relaxed);
     let mbps = sh.bulk_bytes.load(Ordering::Relaxed) as f64 * 8.0 / elapsed / 1e6;
     Ok(format!(
-        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":\"{:?}\",\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0}}}",
+        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":\"{:?}\",\"bulk_rate_mbps\":{},\"cc\":\"{:?}\",\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0}}}",
         a.label,
         a.transport,
         a.bulk,
+        a.bulk_rate,
+        a.cc,
         a.rate,
         a.secs,
         sent,
@@ -563,6 +646,12 @@ async fn main() -> Result<()> {
                     "reverse" => Bulk::Reverse,
                     other => return Err(format!("unknown bulk mode {other}").into()),
                 },
+                bulk_rate: opt(&args, "--bulk-rate").unwrap_or("0").parse()?,
+                cc: match opt(&args, "--cc").unwrap_or("cubic") {
+                    "cubic" => Cc::Cubic,
+                    "bbr" => Cc::Bbr,
+                    other => return Err(format!("unknown cc {other}").into()),
+                },
                 mss: opt(&args, "--mss").map(str::parse).transpose()?,
                 label: opt(&args, "--label").unwrap_or("").to_string(),
             };
@@ -571,7 +660,7 @@ async fn main() -> Result<()> {
         }
         _ => {
             eprintln!(
-                "usage: channels server [--bind ADDR] | channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N] [--bulk none|saturate|reverse] [--mss N] [--label TEXT]"
+                "usage: channels server [--bind ADDR] | channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N] [--bulk none|saturate|reverse] [--bulk-rate MBPS] [--cc cubic|bbr] [--mss N] [--label TEXT]"
             );
             Ok(())
         }
