@@ -11,6 +11,11 @@ param(
 
 $ErrorActionPreference = "Continue"
 $bin = Join-Path $PSScriptRoot "channels.exe"
+if (-not (Test-Path $bin)) {
+    # Layout of the CI artifact zip.
+    $bin = Join-Path $PSScriptRoot "target\release\channels.exe"
+}
+if (-not (Test-Path $bin)) { throw "channels.exe not found next to this script" }
 $out = Join-Path $PSScriptRoot ("$Label-" + (Get-Date -Format "yyyyMMdd-HHmmss") + ".jsonl")
 Write-Host "results: $out"
 
