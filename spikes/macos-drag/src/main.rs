@@ -58,6 +58,7 @@ unsafe extern "C" {
     fn CGEventPost(tap: u32, event: CGEventRef);
     fn CFRelease(cf: *const std::ffi::c_void);
     fn AXIsProcessTrusted() -> bool;
+    fn CGRequestPostEventAccess() -> bool;
 }
 
 const HID_STATE: i32 = 1;
@@ -544,6 +545,12 @@ fn main() {
         Some("drop-window") => run_app(mtm, true, Duration::from_secs(num(1, 60.0) as u64), None),
         Some("catch") => run_catch(mtm, num(1, 60.0) as u64, num(2, 6.0)),
         Some("drop-synthetic") => {
+            // SAFETY: no preconditions; registers the app in Settings and shows the prompt.
+            if !unsafe { AXIsProcessTrusted() } {
+                unsafe { CGRequestPostEventAccess() };
+                log("drop-synthetic: Accessibility missing; requested. Grant it and run again.");
+                return;
+            }
             let target = CGPoint {
                 x: num(1, 200.0),
                 y: num(2, 200.0),
