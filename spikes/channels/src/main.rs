@@ -1,20 +1,28 @@
-//! Spike: input latency while bulk data saturates the link, for three transports.
+//! Spike: input latency while bulk data loads the link, for three transports.
 //!
 //!   channels server [--bind 0.0.0.0:47000]
 //!   channels client --connect HOST:47000 --transport tcp1|tcp2|quic
-//!                   [--rate 1000] [--secs 10] [--bulk none|saturate|reverse] [--bulk-rate MBPS] [--cc cubic|bbr] [--mss N] [--label TEXT]
+//!                   [--rate 1000] [--secs 10] [--bulk none|saturate|reverse]
+//!                   [--bulk-rate MBPS|adaptive] [--target-ms 4] [--cc cubic|bbr]
+//!                   [--mss N] [--label TEXT]
 //!
 //! tcp1: one TCP+TLS connection carrying probes and bulk through one FIFO writer (baseline).
 //! tcp2: control and bulk on separate TCP+TLS connections.
-//! quic: one QUIC connection, control on a high-priority bidi stream, bulk on a uni stream.
+//! quic: one QUIC connection, control on a high-priority bidi stream, bulk on its own stream.
 //!
 //! The client sends small probe frames at `rate` Hz on the control channel; the server echoes
 //! them. RTT is measured on the client clock only. Frames follow protocol v1 framing
 //! (u32 length, u16 type, payload).
+//!
+//! Bulk rate: `0` = unlimited, `N` = fixed N Mbit/s, `adaptive` = delay-based controller driven
+//! by the probe RTT (queueing delay above the recent minimum kept under `--target-ms`). For
+//! `reverse` bulk the client (receiver) runs the controller and sends the rate to the server.
 
+use std::collections::VecDeque;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
@@ -24,6 +32,7 @@ use rustls::{DigitallySignedStruct, SignatureScheme};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, BoxError>;
@@ -38,6 +47,28 @@ const ROLE_CONTROL: u8 = 2;
 const ROLE_BULK: u8 = 3;
 const ROLE_BULK_REVERSE: u8 = 4;
 const ROLE_SINGLE_REVERSE: u8 = 5;
+
+/// Probes sent during the measured window carry this bit in their sequence number.
+const MEASURED: u32 = 0x8000_0000;
+
+static T0: OnceLock<Instant> = OnceLock::new();
+
+fn log(msg: &str) {
+    let t = T0.get_or_init(Instant::now).elapsed().as_secs_f64();
+    eprintln!("[{t:9.3}s] {msg}");
+}
+
+/// Spawns a task and logs its error, if any, with context.
+fn spawn_logged<F>(ctx: String, fut: F)
+where
+    F: Future<Output = Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(e) = fut.await {
+            log(&format!("{ctx}: {e}"));
+        }
+    });
+}
 
 // ---------------------------------------------------------------------------------------------
 // TLS
@@ -116,8 +147,22 @@ fn client_tls() -> Result<rustls::ClientConfig> {
     Ok(cfg)
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Cc {
+    Cubic,
+    Bbr,
+}
+
+fn transport_config(cc: Cc) -> quinn::TransportConfig {
+    let mut tc = quinn::TransportConfig::default();
+    if cc == Cc::Bbr {
+        tc.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
+    }
+    tc
+}
+
 // ---------------------------------------------------------------------------------------------
-// Framing helpers
+// Framing
 // ---------------------------------------------------------------------------------------------
 
 fn frame(kind: u16, payload: &[u8]) -> Vec<u8> {
@@ -135,7 +180,7 @@ fn probe_frame(seq: u32, t_ns: u64) -> Vec<u8> {
     frame(PROBE, &p)
 }
 
-/// Reads one frame; returns (type, payload). `buf` is reused.
+/// Reads one frame into `buf` and returns its type.
 async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Result<u16> {
     let mut hdr = [0u8; 6];
     r.read_exact(&mut hdr).await?;
@@ -149,51 +194,132 @@ async fn read_frame<R: AsyncRead + Unpin>(r: &mut R, buf: &mut Vec<u8>) -> Resul
     Ok(kind)
 }
 
-/// Paces writes to a fixed rate (0 = unlimited) by sleeping until the byte budget allows them.
-struct Pacer {
-    start: Instant,
-    bytes: u64,
-    rate_bps: f64,
+/// Writes every queued frame in FIFO order (one writer per channel).
+async fn writer<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::Receiver<Vec<u8>>) -> Result<()> {
+    while let Some(f) = rx.recv().await {
+        w.write_all(&f).await?;
+        if f.len() < 64 {
+            w.flush().await?;
+        }
+    }
+    Ok(())
 }
 
+// ---------------------------------------------------------------------------------------------
+// Rate control
+// ---------------------------------------------------------------------------------------------
+
 const PACE_SLICE: usize = 16 * 1024;
+/// Credit a paced sender may accumulate while idle, so it cannot burst afterwards.
+const MAX_CREDIT: Duration = Duration::from_millis(2);
+
+/// Paces writes to the rate in `rate_kbps` (0 = unlimited), re-read for every slice.
+struct Pacer {
+    rate_kbps: Arc<AtomicU64>,
+    due: Instant,
+}
 
 impl Pacer {
-    fn new(rate_mbps: u32) -> Self {
+    fn new(rate_kbps: Arc<AtomicU64>) -> Self {
         Self {
-            start: Instant::now(),
-            bytes: 0,
-            rate_bps: f64::from(rate_mbps) * 1e6,
+            rate_kbps,
+            due: Instant::now(),
         }
     }
 
     async fn write<W: AsyncWrite + Unpin>(&mut self, w: &mut W, data: &[u8]) -> Result<()> {
-        if self.rate_bps == 0.0 {
-            w.write_all(data).await?;
-            return Ok(());
-        }
         for part in data.chunks(PACE_SLICE) {
-            self.bytes += part.len() as u64;
-            let due = self.start + Duration::from_secs_f64(self.bytes as f64 * 8.0 / self.rate_bps);
-            tokio::time::sleep_until(due.into()).await;
+            let kbps = self.rate_kbps.load(Ordering::Relaxed);
+            if kbps == 0 {
+                w.write_all(part).await?;
+                continue;
+            }
+            let now = Instant::now();
+            if self.due + MAX_CREDIT < now {
+                self.due = now - MAX_CREDIT;
+            }
+            self.due += Duration::from_secs_f64(part.len() as f64 * 8.0 / (kbps as f64 * 1000.0));
+            tokio::time::sleep_until(self.due.into()).await;
             w.write_all(part).await?;
         }
         Ok(())
     }
 }
 
-fn transport_config(cc: Cc) -> quinn::TransportConfig {
-    let mut tc = quinn::TransportConfig::default();
-    if cc == Cc::Bbr {
-        tc.congestion_controller_factory(Arc::new(quinn::congestion::BbrConfig::default()));
-    }
-    tc
+const START_KBPS: f64 = 10_000.0;
+const MIN_KBPS: f64 = 1_000.0;
+const MAX_KBPS: f64 = 1_000_000.0;
+const TICK: Duration = Duration::from_millis(10);
+const BASE_WINDOW: Duration = Duration::from_secs(10);
+
+/// Delay-based bulk rate controller (LEDBAT-like, on rate instead of window).
+///
+/// queueing delay = min(last 4 RTTs) - min(RTT over the last 10 s).
+/// Above target: multiplicative decrease (x0.8), at most once per RTT.
+/// Below target: increase proportional to the remaining headroom.
+struct Controller {
+    target_ns: u64,
+    rate_kbps: f64,
+    recent: VecDeque<u64>,
+    base: VecDeque<(Instant, u64)>,
+    last_tick: Instant,
+    last_decrease: Instant,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Cc {
-    Cubic,
-    Bbr,
+impl Controller {
+    fn new(target: Duration) -> Self {
+        let now = Instant::now();
+        Self {
+            target_ns: u64::try_from(target.as_nanos()).unwrap_or(u64::MAX),
+            rate_kbps: START_KBPS,
+            recent: VecDeque::with_capacity(4),
+            base: VecDeque::new(),
+            last_tick: now,
+            last_decrease: now,
+        }
+    }
+
+    /// Feeds one RTT sample; returns the rate to use from now on.
+    fn on_rtt(&mut self, rtt_ns: u64, now: Instant) -> f64 {
+        if self.recent.len() == 4 {
+            self.recent.pop_front();
+        }
+        self.recent.push_back(rtt_ns);
+        match self.base.back_mut() {
+            Some((start, min)) if now.duration_since(*start) < Duration::from_secs(1) => {
+                *min = (*min).min(rtt_ns);
+            }
+            _ => self.base.push_back((now, rtt_ns)),
+        }
+        while self
+            .base
+            .front()
+            .is_some_and(|(start, _)| now.duration_since(*start) > BASE_WINDOW)
+        {
+            self.base.pop_front();
+        }
+
+        if now.duration_since(self.last_tick) < TICK {
+            return self.rate_kbps;
+        }
+        self.last_tick = now;
+
+        let filtered = self.recent.iter().copied().min().unwrap_or(rtt_ns);
+        let base = self.base.iter().map(|(_, m)| *m).min().unwrap_or(filtered);
+        let queueing = filtered.saturating_sub(base);
+        if queueing > self.target_ns {
+            let hold = Duration::from_nanos(filtered.max(20_000_000));
+            if now.duration_since(self.last_decrease) >= hold {
+                self.rate_kbps *= 0.8;
+                self.last_decrease = now;
+            }
+        } else {
+            let headroom = 1.0 - queueing as f64 / self.target_ns as f64;
+            self.rate_kbps += headroom * (self.rate_kbps * 0.03).max(250.0);
+        }
+        self.rate_kbps = self.rate_kbps.clamp(MIN_KBPS, MAX_KBPS);
+        self.rate_kbps
+    }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -201,14 +327,14 @@ enum Cc {
 // ---------------------------------------------------------------------------------------------
 
 /// Echoes probe frames, discards everything else. With `reverse_bulk`, the server also streams
-/// bulk chunks back through the same FIFO writer (single-connection baseline, reverse direction).
+/// unpaced bulk chunks back through the same FIFO writer (single-connection baseline).
 async fn serve_control<R, W>(mut r: R, w: W, reverse_bulk: bool) -> Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
-    tokio::spawn(writer(w, rx));
+    spawn_logged("control writer".into(), writer(w, rx));
     if reverse_bulk {
         let tx = tx.clone();
         tokio::spawn(async move {
@@ -220,15 +346,29 @@ where
     loop {
         let kind = read_frame(&mut r, &mut buf).await?;
         if kind == PROBE {
-            tx.send(frame(PROBE, &buf)).await?;
+            tx.send(frame(PROBE, &buf))
+                .await
+                .map_err(|_| "control writer gone")?;
         }
     }
 }
 
-/// Streams bulk chunks at `rate_mbps` (0 = unlimited) until the peer goes away.
-async fn send_bulk<W: AsyncWrite + Unpin>(mut w: W, rate_mbps: u32) -> Result<()> {
+/// Streams bulk chunks paced to the rate the client sends (u32 kbit/s messages, 0 = unlimited),
+/// until the peer goes away.
+async fn send_bulk<R, W>(mut r: R, mut w: W) -> Result<()>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+    W: AsyncWrite + Unpin,
+{
+    let rate = Arc::new(AtomicU64::new(u64::from(r.read_u32_le().await?)));
+    let updates = rate.clone();
+    tokio::spawn(async move {
+        while let Ok(kbps) = r.read_u32_le().await {
+            updates.store(u64::from(kbps), Ordering::Relaxed);
+        }
+    });
     let chunk = frame(CHUNK, &vec![0x5Au8; CHUNK_SIZE]);
-    let mut pacer = Pacer::new(rate_mbps);
+    let mut pacer = Pacer::new(rate);
     loop {
         pacer.write(&mut w, &chunk).await?;
     }
@@ -241,6 +381,7 @@ async fn drain<R: AsyncRead + Unpin>(mut r: R) -> Result<()> {
 }
 
 async fn server(bind: SocketAddr) -> Result<()> {
+    T0.get_or_init(Instant::now);
     let tls = server_tls()?;
     let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls.clone()));
     let listener = TcpListener::bind(bind).await?;
@@ -251,60 +392,67 @@ async fn server(bind: SocketAddr) -> Result<()> {
         let mut cfg = quinn::ServerConfig::with_crypto(Arc::new(quic_cfg));
         cfg.transport_config(Arc::new(transport_config(cc)));
         let endpoint = quinn::Endpoint::server(cfg, SocketAddr::new(bind.ip(), port))?;
-        spawn_quic_server(endpoint);
+        spawn_quic_server(endpoint, cc);
     }
-    eprintln!(
+    log(&format!(
         "listening on tcp {bind}, udp {bind} (quic cubic), udp port {} (quic bbr)",
         bind.port() + 1
-    );
+    ));
 
     loop {
-        let (sock, _) = listener.accept().await?;
+        let (sock, peer) = listener.accept().await?;
         sock.set_nodelay(true)?;
         let acceptor = acceptor.clone();
-        tokio::spawn(async move {
+        spawn_logged(format!("tcp {peer}"), async move {
             let mut tls = acceptor.accept(sock).await?;
             let role = tls.read_u8().await?;
-            match role {
+            log(&format!("tcp {peer} role {role} open"));
+            let result = match role {
                 ROLE_SINGLE | ROLE_CONTROL | ROLE_SINGLE_REVERSE => {
                     let (r, w) = tokio::io::split(tls);
                     serve_control(r, w, role == ROLE_SINGLE_REVERSE).await
                 }
                 ROLE_BULK => drain(tls).await,
                 ROLE_BULK_REVERSE => {
-                    let rate = tls.read_u32_le().await?;
-                    send_bulk(tls, rate).await
+                    let (r, w) = tokio::io::split(tls);
+                    send_bulk(r, w).await
                 }
                 other => Err(format!("unknown role {other}").into()),
-            }
+            };
+            log(&format!("tcp {peer} role {role} closed"));
+            result.map_err(|e| format!("role {role}: {e}").into())
         });
     }
 }
 
-fn spawn_quic_server(endpoint: quinn::Endpoint) {
+fn spawn_quic_server(endpoint: quinn::Endpoint, cc: Cc) {
     tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {
-            tokio::spawn(async move {
+            spawn_logged(format!("quic {cc:?}"), async move {
                 let conn = incoming.await?;
+                let peer = conn.remote_address();
+                log(&format!("quic {cc:?} {peer} open"));
                 let c2 = conn.clone();
                 tokio::spawn(async move {
                     while let Ok(r) = c2.accept_uni().await {
-                        tokio::spawn(drain(r));
+                        spawn_logged(format!("quic {peer} bulk drain"), drain(r));
                     }
                 });
                 while let Ok((s, mut r)) = conn.accept_bi().await {
-                    tokio::spawn(async move {
+                    spawn_logged(format!("quic {peer} stream"), async move {
                         match r.read_u8().await? {
                             ROLE_CONTROL => serve_control(r, s, false).await,
-                            ROLE_BULK_REVERSE => {
-                                let rate = r.read_u32_le().await?;
-                                send_bulk(s, rate).await
-                            }
+                            ROLE_BULK_REVERSE => send_bulk(r, s).await,
                             other => Err(format!("unknown stream role {other}").into()),
                         }
                     });
                 }
-                Ok::<_, BoxError>(())
+                log(&format!(
+                    "quic {cc:?} {peer} closed: {}",
+                    conn.close_reason()
+                        .map_or_else(|| "?".into(), |e| e.to_string())
+                ));
+                Ok(())
             });
         }
     });
@@ -330,13 +478,21 @@ enum Bulk {
     Reverse,
 }
 
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum BulkRate {
+    /// Mbit/s; 0 = unlimited
+    Fixed(u32),
+    Adaptive,
+}
+
 struct Args {
     connect: SocketAddr,
     transport: Transport,
     rate: u64,
     secs: u64,
     bulk: Bulk,
-    bulk_rate: u32,
+    bulk_rate: BulkRate,
+    target: Duration,
     cc: Cc,
     mss: Option<u32>,
     label: String,
@@ -349,6 +505,20 @@ struct Shared {
     bulk_bytes: AtomicU64,
     measuring: AtomicBool,
     stop: AtomicBool,
+    /// Current bulk rate (kbit/s, 0 = unlimited); read by pacers and the rate signaller.
+    rate_kbps: Arc<AtomicU64>,
+    controller: Option<Mutex<Controller>>,
+    /// Controller rate sampled every tick while measuring (kbit/s).
+    rate_trace: Mutex<Vec<f64>>,
+}
+
+impl Shared {
+    fn on_rtt(&self, rtt_ns: u64) {
+        if let Some(c) = &self.controller {
+            let kbps = c.lock().unwrap().on_rtt(rtt_ns, Instant::now());
+            self.rate_kbps.store(kbps as u64, Ordering::Relaxed);
+        }
+    }
 }
 
 async fn tcp_connect(addr: SocketAddr, mss: Option<u32>) -> Result<TcpStream> {
@@ -380,7 +550,8 @@ async fn tls_connect(a: &Args, role: u8) -> Result<tokio_rustls::client::TlsStre
     Ok(tls)
 }
 
-/// Reads echoed probes and records their RTT.
+/// Reads echoed probes, records RTTs of measured probes and feeds every RTT to the controller.
+/// Also counts bulk chunks arriving on the same connection (tcp1 reverse).
 async fn read_echoes<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<()> {
     let mut buf = Vec::new();
     loop {
@@ -393,22 +564,13 @@ async fn read_echoes<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<
             let now = u64::try_from(sh.start.elapsed().as_nanos())?;
             let t = u64::from_le_bytes(buf[4..12].try_into()?);
             let seq = u32::from_le_bytes(buf[..4].try_into()?);
-            if seq & 0x8000_0000 != 0 {
-                sh.rtts.lock().unwrap().push(now - t);
+            let rtt = now - t;
+            sh.on_rtt(rtt);
+            if seq & MEASURED != 0 {
+                sh.rtts.lock().unwrap().push(rtt);
             }
         }
     }
-}
-
-/// Writes every queued frame in FIFO order (one writer per channel).
-async fn writer<W: AsyncWrite + Unpin>(mut w: W, mut rx: mpsc::Receiver<Vec<u8>>) -> Result<()> {
-    while let Some(f) = rx.recv().await {
-        w.write_all(&f).await?;
-        if f.len() < 64 {
-            w.flush().await?;
-        }
-    }
-    Ok(())
 }
 
 async fn bulk_into_queue(tx: mpsc::Sender<Vec<u8>>, sh: Arc<Shared>) {
@@ -438,9 +600,9 @@ async fn count_drain<R: AsyncRead + Unpin>(mut r: R, sh: Arc<Shared>) -> Result<
     }
 }
 
-async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>, rate: u32) -> Result<()> {
+async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>) -> Result<()> {
     let chunk = frame(CHUNK, &vec![0xA5u8; CHUNK_SIZE]);
-    let mut pacer = Pacer::new(rate);
+    let mut pacer = Pacer::new(sh.rate_kbps.clone());
     while !sh.stop.load(Ordering::Relaxed) {
         pacer.write(&mut w, &chunk).await?;
         if sh.measuring.load(Ordering::Relaxed) {
@@ -451,7 +613,30 @@ async fn bulk_direct<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>, rate: u32
     Ok(())
 }
 
+/// Reverse bulk: tells the server the initial rate, then every rate change (u32 kbit/s).
+async fn signal_rate<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>) -> Result<()> {
+    let mut last = sh.rate_kbps.load(Ordering::Relaxed);
+    w.write_u32_le(u32::try_from(last)?).await?;
+    w.flush().await?;
+    while !sh.stop.load(Ordering::Relaxed) {
+        tokio::time::sleep(TICK).await;
+        let now = sh.rate_kbps.load(Ordering::Relaxed);
+        if now != last {
+            w.write_u32_le(u32::try_from(now)?).await?;
+            w.flush().await?;
+            last = now;
+        }
+    }
+    // Keep the stream open until the run ends; the process exit closes it.
+    std::future::pending::<()>().await;
+    Ok(())
+}
+
 async fn client(a: Args) -> Result<String> {
+    let initial_kbps = match a.bulk_rate {
+        BulkRate::Fixed(mbps) => u64::from(mbps) * 1000,
+        BulkRate::Adaptive => START_KBPS as u64,
+    };
     let sh = Arc::new(Shared {
         start: Instant::now(),
         rtts: Mutex::new(Vec::new()),
@@ -459,11 +644,16 @@ async fn client(a: Args) -> Result<String> {
         bulk_bytes: AtomicU64::new(0),
         measuring: AtomicBool::new(false),
         stop: AtomicBool::new(false),
+        rate_kbps: Arc::new(AtomicU64::new(initial_kbps)),
+        controller: (a.bulk_rate == BulkRate::Adaptive)
+            .then(|| Mutex::new(Controller::new(a.target))),
+        rate_trace: Mutex::new(Vec::new()),
     });
 
     // Control queue: the probe loop never blocks on the socket directly.
     let (ctl_tx, ctl_rx) = mpsc::channel::<Vec<u8>>(4096);
-    let mut _quic_keepalive = None;
+    let ctl_writer: JoinHandle<Result<()>>;
+    let mut quic = None;
 
     match a.transport {
         Transport::Tcp1 => {
@@ -474,9 +664,9 @@ async fn client(a: Args) -> Result<String> {
             };
             let (r, w) = tokio::io::split(tls_connect(&a, role).await?);
             tokio::spawn(read_echoes(r, sh.clone()));
-            // Single FIFO shared by probes and bulk: the naive design.
+            // Single FIFO shared by probes and bulk: the naive design (never paced).
             let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
-            tokio::spawn(writer(w, rx));
+            ctl_writer = tokio::spawn(writer(w, rx));
             let fwd = tx.clone();
             let mut ctl_rx = ctl_rx;
             tokio::spawn(async move {
@@ -493,17 +683,16 @@ async fn client(a: Args) -> Result<String> {
         Transport::Tcp2 => {
             let (r, w) = tokio::io::split(tls_connect(&a, ROLE_CONTROL).await?);
             tokio::spawn(read_echoes(r, sh.clone()));
-            tokio::spawn(writer(w, ctl_rx));
+            ctl_writer = tokio::spawn(writer(w, ctl_rx));
             match a.bulk {
                 Bulk::Saturate => {
                     let bulk = tls_connect(&a, ROLE_BULK).await?;
-                    tokio::spawn(bulk_direct(bulk, sh.clone(), a.bulk_rate));
+                    tokio::spawn(bulk_direct(bulk, sh.clone()));
                 }
                 Bulk::Reverse => {
-                    let mut bulk = tls_connect(&a, ROLE_BULK_REVERSE).await?;
-                    bulk.write_u32_le(a.bulk_rate).await?;
-                    bulk.flush().await?;
-                    tokio::spawn(count_drain(bulk, sh.clone()));
+                    let (br, bw) = tokio::io::split(tls_connect(&a, ROLE_BULK_REVERSE).await?);
+                    tokio::spawn(signal_rate(bw, sh.clone()));
+                    tokio::spawn(count_drain(br, sh.clone()));
                 }
                 Bulk::None => {}
             }
@@ -523,55 +712,85 @@ async fn client(a: Args) -> Result<String> {
             s.set_priority(100)?;
             s.write_all(&[ROLE_CONTROL]).await?;
             tokio::spawn(read_echoes(r, sh.clone()));
-            tokio::spawn(writer(s, ctl_rx));
+            ctl_writer = tokio::spawn(writer(s, ctl_rx));
             match a.bulk {
                 Bulk::Saturate => {
                     let u = conn.open_uni().await?;
                     u.set_priority(0)?;
-                    tokio::spawn(bulk_direct(u, sh.clone(), a.bulk_rate));
+                    tokio::spawn(bulk_direct(u, sh.clone()));
                 }
                 Bulk::Reverse => {
                     let (mut bs, br) = conn.open_bi().await?;
                     bs.write_all(&[ROLE_BULK_REVERSE]).await?;
-                    bs.write_all(&a.bulk_rate.to_le_bytes()).await?;
+                    tokio::spawn(signal_rate(bs, sh.clone()));
                     tokio::spawn(count_drain(br, sh.clone()));
-                    // Keep the send half alive for the duration of the run.
-                    std::mem::forget(bs);
                 }
                 Bulk::None => {}
             }
-            _quic_keepalive = Some((ep, conn));
+            quic = Some((ep, conn));
         }
     }
 
-    // Warm-up: let bulk reach steady state before measuring.
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    sh.measuring.store(true, Ordering::Relaxed);
-    let measure_start = Instant::now();
+    // Probes run during warm-up too (they drive the controller) but are only measured after it.
+    let warmup = if a.bulk_rate == BulkRate::Adaptive {
+        Duration::from_secs(3)
+    } else {
+        Duration::from_secs(1)
+    };
     let period = Duration::from_nanos(1_000_000_000 / a.rate);
     let mut tick = tokio::time::interval(period);
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-    let n = a.rate * a.secs;
+    let warmup_end = Instant::now() + warmup;
+    let mut measure_start = None;
+    let mut last_trace = Instant::now();
     // Wall-clock cap: a blocked shared queue (tcp1) must not stretch a run indefinitely.
-    let cap = Duration::from_secs(a.secs * 4);
-    for i in 0..n {
-        if measure_start.elapsed() > cap {
-            break;
-        }
+    let cap = warmup + Duration::from_secs(a.secs * 4);
+    let started = Instant::now();
+    let mut i: u32 = 0;
+    loop {
         tick.tick().await;
+        let now = Instant::now();
+        if now >= warmup_end && measure_start.is_none() {
+            measure_start = Some(now);
+            sh.measuring.store(true, Ordering::Relaxed);
+        }
+        if let Some(ms) = measure_start {
+            if now.duration_since(ms) >= Duration::from_secs(a.secs)
+                || now.duration_since(started) > cap
+            {
+                break;
+            }
+            if now.duration_since(last_trace) >= TICK {
+                last_trace = now;
+                sh.rate_trace
+                    .lock()
+                    .unwrap()
+                    .push(sh.rate_kbps.load(Ordering::Relaxed) as f64);
+            }
+        }
         let t = u64::try_from(sh.start.elapsed().as_nanos())?;
-        // High bit marks measured probes.
-        let seq = u32::try_from(i)? | 0x8000_0000;
-        ctl_tx.send(probe_frame(seq, t)).await?;
-        sh.sent.fetch_add(1, Ordering::Relaxed);
+        let measured = measure_start.is_some();
+        let seq = (i & !MEASURED) | if measured { MEASURED } else { 0 };
+        i = i.wrapping_add(1);
+        if ctl_tx.send(probe_frame(seq, t)).await.is_err() {
+            let cause = match ctl_writer.await {
+                Ok(Err(e)) => e.to_string(),
+                Ok(Ok(())) => "writer ended".into(),
+                Err(e) => e.to_string(),
+            };
+            return Err(format!("control channel failed: {cause}").into());
+        }
+        if measured {
+            sh.sent.fetch_add(1, Ordering::Relaxed);
+        }
     }
-    let elapsed = measure_start.elapsed().as_secs_f64();
+    let elapsed = measure_start.map_or(0.0, |ms| ms.elapsed().as_secs_f64());
     sh.measuring.store(false, Ordering::Relaxed);
     sh.stop.store(true, Ordering::Relaxed);
     // Grace period for in-flight echoes.
     tokio::time::sleep(Duration::from_secs(3)).await;
     // Close QUIC explicitly so the server stops sending before the next run starts.
-    if let Some((ep, conn)) = _quic_keepalive.take() {
+    if let Some((ep, conn)) = quic.take() {
         conn.close(0u32.into(), b"done");
         let _ = tokio::time::timeout(Duration::from_secs(2), ep.wait_idle()).await;
     }
@@ -585,14 +804,25 @@ async fn client(a: Args) -> Result<String> {
             v[((v.len() - 1) as f64 * p).round() as usize] as f64 / 1000.0
         }
     };
+    let trace = sh.rate_trace.lock().unwrap().clone();
+    let avg_rate_mbps = if trace.is_empty() {
+        0.0
+    } else {
+        trace.iter().sum::<f64>() / trace.len() as f64 / 1000.0
+    };
     let sent = sh.sent.load(Ordering::Relaxed);
-    let mbps = sh.bulk_bytes.load(Ordering::Relaxed) as f64 * 8.0 / elapsed / 1e6;
+    let mbps = sh.bulk_bytes.load(Ordering::Relaxed) as f64 * 8.0 / elapsed.max(1e-9) / 1e6;
+    let bulk_rate = match a.bulk_rate {
+        BulkRate::Fixed(m) => m.to_string(),
+        BulkRate::Adaptive => "\"adaptive\"".into(),
+    };
     Ok(format!(
-        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":\"{:?}\",\"bulk_rate_mbps\":{},\"cc\":\"{:?}\",\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0}}}",
+        "{{\"label\":\"{}\",\"transport\":\"{:?}\",\"bulk\":\"{:?}\",\"bulk_rate_mbps\":{},\"target_ms\":{},\"cc\":\"{:?}\",\"rate\":{},\"secs\":{},\"sent\":{},\"received\":{},\"rtt_us\":{{\"p50\":{:.0},\"p95\":{:.0},\"p99\":{:.0},\"p999\":{:.0},\"max\":{:.0}}},\"bulk_mbps\":{:.0},\"controller_avg_mbps\":{:.1}}}",
         a.label,
         a.transport,
         a.bulk,
-        a.bulk_rate,
+        bulk_rate,
+        a.target.as_millis(),
         a.cc,
         a.rate,
         a.secs,
@@ -603,7 +833,8 @@ async fn client(a: Args) -> Result<String> {
         pct(0.99),
         pct(0.999),
         v.last().map_or(0.0, |&x| x as f64 / 1000.0),
-        mbps
+        mbps,
+        avg_rate_mbps
     ))
 }
 
@@ -618,6 +849,11 @@ fn opt<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         .map(String::as_str)
 }
 
+const USAGE: &str = "usage: channels server [--bind ADDR]
+       channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N]
+                       [--bulk none|saturate|reverse] [--bulk-rate MBPS|adaptive]
+                       [--target-ms MS] [--cc cubic|bbr] [--mss N] [--label TEXT]";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -627,17 +863,16 @@ async fn main() -> Result<()> {
             server(bind).await
         }
         Some("client") => {
-            let transport = match opt(&args, "--transport").unwrap_or("tcp2") {
-                "tcp1" => Transport::Tcp1,
-                "tcp2" => Transport::Tcp2,
-                "quic" => Transport::Quic,
-                other => return Err(format!("unknown transport {other}").into()),
-            };
             let a = Args {
                 connect: opt(&args, "--connect")
                     .ok_or("--connect required")?
                     .parse()?,
-                transport,
+                transport: match opt(&args, "--transport").unwrap_or("tcp2") {
+                    "tcp1" => Transport::Tcp1,
+                    "tcp2" => Transport::Tcp2,
+                    "quic" => Transport::Quic,
+                    other => return Err(format!("unknown transport {other}").into()),
+                },
                 rate: opt(&args, "--rate").unwrap_or("1000").parse()?,
                 secs: opt(&args, "--secs").unwrap_or("10").parse()?,
                 bulk: match opt(&args, "--bulk").unwrap_or("none") {
@@ -646,7 +881,11 @@ async fn main() -> Result<()> {
                     "reverse" => Bulk::Reverse,
                     other => return Err(format!("unknown bulk mode {other}").into()),
                 },
-                bulk_rate: opt(&args, "--bulk-rate").unwrap_or("0").parse()?,
+                bulk_rate: match opt(&args, "--bulk-rate").unwrap_or("0") {
+                    "adaptive" => BulkRate::Adaptive,
+                    n => BulkRate::Fixed(n.parse()?),
+                },
+                target: Duration::from_millis(opt(&args, "--target-ms").unwrap_or("4").parse()?),
                 cc: match opt(&args, "--cc").unwrap_or("cubic") {
                     "cubic" => Cc::Cubic,
                     "bbr" => Cc::Bbr,
@@ -659,10 +898,58 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            eprintln!(
-                "usage: channels server [--bind ADDR] | channels client --connect ADDR --transport tcp1|tcp2|quic [--rate HZ] [--secs N] [--bulk none|saturate|reverse] [--bulk-rate MBPS] [--cc cubic|bbr] [--mss N] [--label TEXT]"
-            );
+            eprintln!("{USAGE}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MS: u64 = 1_000_000;
+
+    fn feed(c: &mut Controller, rtt_ms: f64, from: Instant, steps: u32) -> f64 {
+        let mut rate = 0.0;
+        for k in 0..steps {
+            let now = from + TICK * k;
+            rate = c.on_rtt((rtt_ms * MS as f64) as u64, now);
+        }
+        rate
+    }
+
+    #[test]
+    fn grows_while_rtt_stays_at_base() {
+        let mut c = Controller::new(Duration::from_millis(4));
+        let t = Instant::now();
+        let rate = feed(&mut c, 3.0, t + TICK, 200);
+        assert!(rate > START_KBPS * 10.0, "rate {rate}");
+    }
+
+    #[test]
+    fn backs_off_when_queueing_exceeds_target() {
+        let mut c = Controller::new(Duration::from_millis(4));
+        let t = Instant::now();
+        let high = feed(&mut c, 3.0, t + TICK, 200);
+        let low = feed(&mut c, 30.0, t + TICK * 201, 100);
+        assert!(low < high * 0.2, "high {high} low {low}");
+        assert!(low >= MIN_KBPS);
+    }
+
+    #[test]
+    fn holds_steady_near_target() {
+        let mut c = Controller::new(Duration::from_millis(4));
+        let t = Instant::now();
+        feed(&mut c, 3.0, t + TICK, 100);
+        // Queueing exactly at target: no headroom, no decrease. Let the min-of-4 filter
+        // flush the 3 ms samples first.
+        feed(&mut c, 7.0, t + TICK * 101, 5);
+        let before = c.rate_kbps;
+        let after = feed(&mut c, 7.0, t + TICK * 106, 50);
+        assert!(
+            (after - before).abs() / before < 0.05,
+            "before {before} after {after}"
+        );
     }
 }
