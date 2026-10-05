@@ -10,6 +10,8 @@
 #![allow(non_upper_case_globals, clippy::missing_safety_doc)]
 
 use std::ffi::c_void;
+
+mod park;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::ptr::null_mut;
@@ -150,7 +152,13 @@ struct Samples {
 impl Samples {
     fn new(n: usize) -> Self {
         let v = || (0..n).map(|_| AtomicU64::new(0)).collect();
-        Self { t0: v(), t1: v(), t2: v(), t2b: v(), t3: v() }
+        Self {
+            t0: v(),
+            t1: v(),
+            t2: v(),
+            t2b: v(),
+            t3: v(),
+        }
     }
 }
 
@@ -198,7 +206,12 @@ fn seq_of(ud: i64, mark: i64) -> Option<usize> {
 }
 
 // Capture tap (HID level, active): swallows SRC events and forwards their sequence number.
-extern "C" fn capture_cb(_: CGEventTapProxy, kind: u32, ev: CGEventRef, _: *mut c_void) -> CGEventRef {
+extern "C" fn capture_cb(
+    _: CGEventTapProxy,
+    kind: u32,
+    ev: CGEventRef,
+    _: *mut c_void,
+) -> CGEventRef {
     let now = now_ns();
     if kind == EV_TAP_DISABLED_TIMEOUT || kind == EV_TAP_DISABLED_USER {
         reenable_taps();
@@ -221,7 +234,12 @@ extern "C" fn capture_cb(_: CGEventTapProxy, kind: u32, ev: CGEventRef, _: *mut 
 }
 
 // Observer tap (session level, listen-only): timestamps INJ events as an app would see them.
-extern "C" fn observe_cb(_: CGEventTapProxy, kind: u32, ev: CGEventRef, _: *mut c_void) -> CGEventRef {
+extern "C" fn observe_cb(
+    _: CGEventTapProxy,
+    kind: u32,
+    ev: CGEventRef,
+    _: *mut c_void,
+) -> CGEventRef {
     let now = now_ns();
     if kind == EV_TAP_DISABLED_TIMEOUT || kind == EV_TAP_DISABLED_USER {
         reenable_taps();
@@ -291,7 +309,9 @@ fn run_taps(taps: &[(u32, u32, u64, TapCallback)]) -> Result<(), String> {
         for &(location, options, events, cb) in taps {
             let port = CGEventTapCreate(location, HEAD_INSERT, options, events, cb, null_mut());
             if port.is_null() {
-                return Err(format!("CGEventTapCreate failed (location {location}, options {options})"));
+                return Err(format!(
+                    "CGEventTapCreate failed (location {location}, options {options})"
+                ));
             }
             let src = CFMachPortCreateRunLoopSource(std::ptr::null(), port, 0);
             CFRunLoopAddSource(rl, src, kCFRunLoopCommonModes);
@@ -332,11 +352,18 @@ fn stat_line(name: &str, mut v: Vec<u64>) -> String {
 }
 
 fn report(mode: &str, body: &str) {
-    let dir = format!("{}/Library/Logs/portalswitch-spike", std::env::var("HOME").unwrap());
+    let dir = format!(
+        "{}/Library/Logs/portalswitch-spike",
+        std::env::var("HOME").unwrap()
+    );
     std::fs::create_dir_all(&dir).unwrap();
     let path = format!("{dir}/latency.log");
     let text = format!("===== mode={mode} uptime_ns={}\n{body}\n", now_ns());
-    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(path).unwrap();
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .unwrap();
     f.write_all(text.as_bytes()).unwrap();
     print!("{text}");
 }
@@ -362,7 +389,10 @@ fn ensure_permissions(mode: &str) -> bool {
             CGRequestPostEventAccess();
             CGRequestListenEventAccess();
         }
-        report(mode, &format!("missing permissions, requested. {}", permissions()));
+        report(
+            mode,
+            &format!("missing permissions, requested. {}", permissions()),
+        );
     }
     ok
 }
@@ -437,8 +467,18 @@ fn synthetic(hz: u64, secs: u64) -> Result<String, String> {
     let taps = thread::spawn(|| {
         pipeline_thread();
         run_taps(&[
-            (HID_EVENT_TAP, TAP_DEFAULT, mask(&[EV_MOUSE_MOVED]), capture_cb as TapCallback),
-            (SESSION_EVENT_TAP, TAP_LISTEN_ONLY, mask(&[EV_MOUSE_MOVED]), observe_cb as TapCallback),
+            (
+                HID_EVENT_TAP,
+                TAP_DEFAULT,
+                mask(&[EV_MOUSE_MOVED]),
+                capture_cb as TapCallback,
+            ),
+            (
+                SESSION_EVENT_TAP,
+                TAP_LISTEN_ONLY,
+                mask(&[EV_MOUSE_MOVED]),
+                observe_cb as TapCallback,
+            ),
         ])
     });
     while !READY.load(Ordering::SeqCst) {
@@ -477,8 +517,13 @@ fn synthetic(hz: u64, secs: u64) -> Result<String, String> {
         (vec![], vec![], vec![], vec![], vec![]);
     let (mut lost_cap, mut lost_obs) = (0, 0);
     for i in 0..n {
-        let (t0, t1, t2, t2b, t3) =
-            (get(&s.t0, i), get(&s.t1, i), get(&s.t2, i), get(&s.t2b, i), get(&s.t3, i));
+        let (t0, t1, t2, t2b, t3) = (
+            get(&s.t0, i),
+            get(&s.t1, i),
+            get(&s.t2, i),
+            get(&s.t2b, i),
+            get(&s.t3, i),
+        );
         if t1 == 0 {
             lost_cap += 1;
             continue;
@@ -526,13 +571,22 @@ fn real(secs: u64, strategy: &str) -> Result<String, String> {
         // Without this, warping freezes local input for ~250 ms after each warp.
         CGSetLocalEventsSuppressionInterval(0.0);
     }
-    let options = if s == STRATEGY_SWALLOW { TAP_DEFAULT } else { TAP_LISTEN_ONLY };
+    let options = if s == STRATEGY_SWALLOW {
+        TAP_DEFAULT
+    } else {
+        TAP_LISTEN_ONLY
+    };
     let taps = thread::spawn(move || {
         pipeline_thread();
         run_taps(&[(
             HID_EVENT_TAP,
             options,
-            mask(&[EV_MOUSE_MOVED, EV_LEFT_DRAGGED, EV_RIGHT_DRAGGED, EV_OTHER_DRAGGED]),
+            mask(&[
+                EV_MOUSE_MOVED,
+                EV_LEFT_DRAGGED,
+                EV_RIGHT_DRAGGED,
+                EV_OTHER_DRAGGED,
+            ]),
             real_cb as TapCallback,
         )])
     });
@@ -558,7 +612,10 @@ fn real(secs: u64, strategy: &str) -> Result<String, String> {
 
     let v = REAL.lock().unwrap().clone();
     if v.len() < 2 {
-        return Ok(format!("decouple_rc={rc} events={} (move the mouse during the run)", v.len()));
+        return Ok(format!(
+            "decouple_rc={rc} events={} (move the mouse during the run)",
+            v.len()
+        ));
     }
     let mut tb = MachTimebaseInfo { numer: 0, denom: 0 };
     // SAFETY: valid out pointer.
@@ -567,28 +624,50 @@ fn real(secs: u64, strategy: &str) -> Result<String, String> {
 
     // CGEventGetTimestamp is documented as nanoseconds but has been observed to be mach ticks
     // on Apple silicon; report both interpretations and pick the plausible one.
-    let as_ns: Vec<i128> = v.iter().map(|s| s.now_ns as i128 - s.event_ts as i128).collect();
-    let as_ticks: Vec<i128> =
-        v.iter().map(|s| ticks_to_ns(s.now_mach) as i128 - ticks_to_ns(s.event_ts) as i128).collect();
-    let plausible = |d: &[i128]| d.iter().filter(|&&x| (0..1_000_000_000).contains(&x)).count();
+    let as_ns: Vec<i128> = v
+        .iter()
+        .map(|s| s.now_ns as i128 - s.event_ts as i128)
+        .collect();
+    let as_ticks: Vec<i128> = v
+        .iter()
+        .map(|s| ticks_to_ns(s.now_mach) as i128 - ticks_to_ns(s.event_ts) as i128)
+        .collect();
+    let plausible = |d: &[i128]| {
+        d.iter()
+            .filter(|&&x| (0..1_000_000_000).contains(&x))
+            .count()
+    };
     let (unit, lat) = if plausible(&as_ticks) >= plausible(&as_ns) {
         ("mach_ticks", as_ticks)
     } else {
         ("nanoseconds", as_ns)
     };
-    let lat: Vec<u64> = lat.into_iter().filter(|&x| x >= 0).map(|x| x as u64).collect();
+    let lat: Vec<u64> = lat
+        .into_iter()
+        .filter(|&x| x >= 0)
+        .map(|x| x as u64)
+        .collect();
 
     let intervals: Vec<u64> = v.windows(2).map(|w| w[1].now_ns - w[0].now_ns).collect();
     let dur_s = (v.last().unwrap().now_ns - v[0].now_ns) as f64 / 1e9;
-    let (sx, sy) = v.iter().fold((0i64, 0i64), |(a, b), s| (a + s.dx, b + s.dy));
+    let (sx, sy) = v
+        .iter()
+        .fold((0i64, 0i64), |(a, b), s| (a + s.dx, b + s.dy));
     let zero = v.iter().filter(|s| s.dx == 0 && s.dy == 0).count();
-    let max_d = v.iter().map(|s| s.dx.abs().max(s.dy.abs())).max().unwrap_or(0);
+    let max_d = v
+        .iter()
+        .map(|s| s.dx.abs().max(s.dy.abs()))
+        .max()
+        .unwrap_or(0);
     let park = *PARK.lock().unwrap();
     let max_drift = v
         .iter()
         .map(|s| (s.x - park.x).abs().max((s.y - park.y).abs()))
         .fold(0.0f64, f64::max);
-    let drifted = v.iter().filter(|s| (s.x - park.x).abs() > 2.0 || (s.y - park.y).abs() > 2.0).count();
+    let drifted = v
+        .iter()
+        .filter(|s| (s.x - park.x).abs() > 2.0 || (s.y - park.y).abs() > 2.0)
+        .count();
 
     Ok([
         format!(
@@ -629,6 +708,7 @@ fn main() {
     let result = match mode {
         "synthetic" => synthetic(num(1, 1000), num(2, 10)),
         "real" => real(num(1, 8), args.get(2).map_or("decouple", String::as_str)),
+        "park" => park::park(num(1, 8), args.get(2..).unwrap_or_default()),
         other => Err(format!("unknown mode {other}")),
     };
     match result {
