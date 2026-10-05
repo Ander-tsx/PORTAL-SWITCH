@@ -1,0 +1,15 @@
+[package]
+name = "macos-drag"
+description = "Spike: detect file drags and discover drop folders with file promises on macOS."
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Standalone: spikes are not part of the product workspace.
+[workspace]
+
+[dependencies]
+block2 = "0.6.2"
+objc2 = "0.6.4"
+objc2-app-kit = "0.3.2"
+objc2-foundation = "0.3.2"
