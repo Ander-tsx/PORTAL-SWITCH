@@ -377,6 +377,21 @@ pub(crate) fn agent() -> Result<String> {
                 before.zip(after).is_some_and(|(b, a)| a != b)
             ),
         );
+        let trigger = crate::util::log_dir().join(crate::util::TYPE_TRIGGER);
+        if let Ok(text) = std::fs::read_to_string(&trigger) {
+            let _ = std::fs::remove_file(&trigger);
+            let delay = text.trim().parse().unwrap_or(5);
+            log_to(
+                AGENT_LOG,
+                &format!("typetest requested, typing in {delay} s"),
+            );
+            std::thread::sleep(Duration::from_secs(delay));
+            let n = crate::util::type_x(5);
+            log_to(
+                AGENT_LOG,
+                &format!("typetest: SendInput inserted {n}/10 on desktop={desk}"),
+            );
+        }
         std::thread::sleep(Duration::from_millis(850));
     }
 }

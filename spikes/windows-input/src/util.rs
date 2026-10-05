@@ -4,6 +4,10 @@ use std::io::Write as _;
 use std::sync::OnceLock;
 
 use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput,
+    VIRTUAL_KEY,
+};
 
 pub(crate) type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -73,3 +77,29 @@ pub(crate) fn log_to(file: &str, msg: &str) {
         let _ = writeln!(f, "{secs:.3} {msg}");
     }
 }
+
+/// Types `count` letters "x" with Unicode key events; returns the number of events inserted.
+/// SendInput does not report UIPI blocking, so the effect must be observed on screen.
+pub(crate) fn type_x(count: usize) -> u32 {
+    let key = |up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: u16::from(b'x'),
+                dwFlags: if up {
+                    KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                } else {
+                    KEYEVENTF_UNICODE
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs: Vec<INPUT> = (0..count).flat_map(|_| [key(false), key(true)]).collect();
+    // SAFETY: well-formed INPUT array.
+    unsafe { SendInput(&inputs, size_of::<INPUT>() as i32) }
+}
+
+pub(crate) const TYPE_TRIGGER: &str = "type.now";

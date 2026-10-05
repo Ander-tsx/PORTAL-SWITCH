@@ -47,12 +47,13 @@ unsafe extern "system" fn mouse_hook(code: i32, wparam: WPARAM, lparam: LPARAM) 
             HOOK_SEEN_OTHER.fetch_add(1, Ordering::Relaxed);
         }
         if info.dwExtraInfo & !0xFFFF == MAGIC
-            && let Some(v) = HOOK_T.get() {
-                let seq = info.dwExtraInfo & 0xFFFF;
-                if let Some(slot) = v.get(seq) {
-                    slot.store(t, Ordering::Relaxed);
-                }
+            && let Some(v) = HOOK_T.get()
+        {
+            let seq = info.dwExtraInfo & 0xFFFF;
+            if let Some(slot) = v.get(seq) {
+                slot.store(t, Ordering::Relaxed);
             }
+        }
         if SWALLOW.load(Ordering::Relaxed) {
             return LRESULT(1);
         }

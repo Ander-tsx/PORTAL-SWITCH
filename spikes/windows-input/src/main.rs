@@ -9,6 +9,8 @@
 //!   service install|uninstall|start|stop  manage the spike service (run as administrator)
 //!   service-main                        entry point used by the service control manager
 //!   agent                               session agent launched by the service
+//!   typetest <delay>                    after <delay> s, type "xxxxx" from this process
+//!   typetest-agent <delay>              ask the running service agent (SYSTEM) to do the same
 //!
 //! Logs from the service and agent go to C:\ProgramData\PortalSwitchSpike\.
 
@@ -33,10 +35,12 @@ fn main() {
         Some("service") => service::manage(args.get(1).map_or("", String::as_str)),
         Some("service-main") => service::run_dispatcher(),
         Some("agent") => service::agent(),
+        Some("typetest") => typetest(num(1, 5)),
+        Some("typetest-agent") => typetest_agent(num(1, 5)),
         _ => {
             eprintln!(
                 "usage: windows-input inject <hz> <secs> [swallow] | rawinput <secs> [swallow] [selftest] \
-                 | desktop | service install|uninstall|start|stop"
+                 | desktop | service install|uninstall|start|stop | typetest <s> | typetest-agent <s>"
             );
             Ok(String::new())
         }
@@ -52,6 +56,29 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(windows)]
+fn typetest(delay: u64) -> util::Result<String> {
+    for s in (1..=delay).rev() {
+        eprintln!("typing in {s} s - focus the target window now");
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    let n = util::type_x(5);
+    Ok(format!(
+        "typed 5 x, SendInput inserted {n}/10; {}",
+        desktop::summary()
+    ))
+}
+
+#[cfg(windows)]
+fn typetest_agent(delay: u64) -> util::Result<String> {
+    let path = util::log_dir().join(util::TYPE_TRIGGER);
+    std::fs::create_dir_all(util::log_dir())?;
+    std::fs::write(&path, delay.to_string())?;
+    Ok(format!(
+        "agent will type \"xxxxx\" in ~{delay} s (focus the target window); see agent.log"
+    ))
 }
 
 #[cfg(not(windows))]
