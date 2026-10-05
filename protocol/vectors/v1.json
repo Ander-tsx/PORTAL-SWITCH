@@ -1,0 +1,335 @@
+{
+  "protocol": "portalswitch",
+  "version": "1.0",
+  "generator": "protocol/tools/gen_vectors.py",
+  "vectors": [
+    {
+      "name": "hello_host",
+      "message": "Hello",
+      "type": "0x8001",
+      "expect": "ok",
+      "note": "host Hello; caps text+HTML+PNG+files+drag&drop",
+      "frame": "3200000001800100010017010000000000006f1c2a3b4c5d4e6f8091a2b3c4d5e6f70b004573747564696f204d61630500302e312e30"
+    },
+    {
+      "name": "session_start",
+      "message": "SessionStart",
+      "type": "0x8002",
+      "expect": "ok",
+      "note": "",
+      "frame": "22000000028000112233445566778899aabbccddeeffffeeddccbbaa99887766554433221100"
+    },
+    {
+      "name": "goodbye_incompatible",
+      "message": "Goodbye",
+      "type": "0x8003",
+      "expect": "ok",
+      "note": "reason INCOMPATIBLE_VERSION, detail = local version",
+      "frame": "09000000038002000300312e30"
+    },
+    {
+      "name": "goodbye_no_detail",
+      "message": "Goodbye",
+      "type": "0x8003",
+      "expect": "ok",
+      "note": "detail field absent",
+      "frame": "0400000003800100"
+    },
+    {
+      "name": "ping",
+      "message": "Ping",
+      "type": "0x0004",
+      "expect": "ok",
+      "note": "",
+      "frame": "0e000000040007000000cb04fb711f010000"
+    },
+    {
+      "name": "pong",
+      "message": "Pong",
+      "type": "0x0005",
+      "expect": "ok",
+      "note": "",
+      "frame": "0e000000050007000000cb04fb711f010000"
+    },
+    {
+      "name": "bulk_attach",
+      "message": "BulkAttach",
+      "type": "0x8006",
+      "expect": "ok",
+      "note": "",
+      "frame": "120000000680ffeeddccbbaa99887766554433221100"
+    },
+    {
+      "name": "pair_start",
+      "message": "PairStart",
+      "type": "0x8010",
+      "expect": "ok",
+      "note": "empty payload",
+      "frame": "020000001080"
+    },
+    {
+      "name": "pair_confirm_yes",
+      "message": "PairConfirm",
+      "type": "0x8011",
+      "expect": "ok",
+      "note": "",
+      "frame": "03000000118001"
+    },
+    {
+      "name": "enter",
+      "message": "Enter",
+      "type": "0x8101",
+      "expect": "ok",
+      "note": "Caps Lock on, Shift-left held",
+      "frame": "1300000001812a0000007f070000d4feffff0101000000"
+    },
+    {
+      "name": "leave",
+      "message": "Leave",
+      "type": "0x8102",
+      "expect": "ok",
+      "note": "",
+      "frame": "0600000002812a000000"
+    },
+    {
+      "name": "leave_ack_ok",
+      "message": "LeaveAck",
+      "type": "0x8103",
+      "expect": "ok",
+      "note": "",
+      "frame": "0700000003812a00000001"
+    },
+    {
+      "name": "mouse_motion_neg",
+      "message": "MouseMotion",
+      "type": "0x8104",
+      "expect": "ok",
+      "note": "negative dx, t_us near wrap",
+      "frame": "0e00000004812a00000000286beefbff0c00"
+    },
+    {
+      "name": "mouse_absolute",
+      "message": "MouseAbsolute",
+      "type": "0x8105",
+      "expect": "ok",
+      "note": "monitor left of origin",
+      "frame": "1200000005812a0000000a00000000f6ffffa0050000"
+    },
+    {
+      "name": "mouse_button_left_down",
+      "message": "MouseButton",
+      "type": "0x8106",
+      "expect": "ok",
+      "note": "",
+      "frame": "0c00000006812a0000000b0000000101"
+    },
+    {
+      "name": "wheel_trackpad",
+      "message": "Wheel",
+      "type": "0x8107",
+      "expect": "ok",
+      "note": "half notch, continuous device",
+      "frame": "0f00000007812a0000000c0000000000c4ff01"
+    },
+    {
+      "name": "key_n_tilde_down",
+      "message": "Key",
+      "type": "0x8108",
+      "expect": "ok",
+      "note": "ES layout: physical ';' position (HID 0x33) producing U+00F1",
+      "frame": "2000000008812a0000000d0000000100002d00000033000700f100000000000000000000"
+    },
+    {
+      "name": "key_repeat",
+      "message": "Key",
+      "type": "0x8108",
+      "expect": "ok",
+      "note": "3 repeats",
+      "frame": "2000000008812a0000000e0000000203002d00000033000700f100000000000000000000"
+    },
+    {
+      "name": "key_cmd_c",
+      "message": "Key",
+      "type": "0x8108",
+      "expect": "ok",
+      "note": "Cmd(Meta-left)+C",
+      "frame": "2000000008812a0000000f00000001000008000000060007006300000000004000000000"
+    },
+    {
+      "name": "key_volume_up",
+      "message": "Key",
+      "type": "0x8108",
+      "expect": "ok",
+      "note": "consumer page Volume Up",
+      "frame": "2000000008812a0000001000000001000048000000e9000c00000000003c000000000000"
+    },
+    {
+      "name": "key_dead_acute",
+      "message": "Key",
+      "type": "0x8108",
+      "expect": "ok",
+      "note": "dead key flag",
+      "frame": "2000000008812a000000110000000100002700000034000700b400000000000000000001"
+    },
+    {
+      "name": "release_all",
+      "message": "ReleaseAll",
+      "type": "0x8109",
+      "expect": "ok",
+      "note": "",
+      "frame": "0600000009812a000000"
+    },
+    {
+      "name": "clipboard_grab",
+      "message": "ClipboardGrab",
+      "type": "0x0201",
+      "expect": "ok",
+      "note": "text + HTML",
+      "frame": "0e0000000102090000002a00000003000000"
+    },
+    {
+      "name": "drag_start",
+      "message": "DragStart",
+      "type": "0x0301",
+      "expect": "ok",
+      "note": "UTF-8 name",
+      "frame": "24000000010303000000020000000000a000000000001000496e666f726d652061c3b16f2e706466"
+    },
+    {
+      "name": "transfer_begin_files",
+      "message": "TransferBegin",
+      "type": "0x8302",
+      "expect": "ok",
+      "note": "",
+      "frame": "1700000002830300000002020000000000a0000000000000000000"
+    },
+    {
+      "name": "transfer_item_nested",
+      "message": "TransferItem",
+      "type": "0x8303",
+      "expect": "ok",
+      "note": "",
+      "frame": "290000000383030000000100000001000000040000000000001200466f746f732f5365c3b1616c20312e706e67"
+    },
+    {
+      "name": "transfer_item_clipboard_html",
+      "message": "TransferItem",
+      "type": "0x8303",
+      "expect": "ok",
+      "note": "clipboard HTML, no path",
+      "frame": "170000000383040000000000000003020030000000000000000000"
+    },
+    {
+      "name": "transfer_chunk",
+      "message": "TransferChunk",
+      "type": "0x8304",
+      "expect": "ok",
+      "note": "",
+      "frame": "2900000004830300000001000000000001000000000013000000486f6c612c20c3b1616e64c3ba20f09f90a60a"
+    },
+    {
+      "name": "transfer_item_end",
+      "message": "TransferItemEnd",
+      "type": "0x8305",
+      "expect": "ok",
+      "note": "sha256 of the chunk data above",
+      "frame": "2a0000000583030000000100000039a171b75ce779b089bd45b1d33738afd48d834258196608341799e26d4271bb"
+    },
+    {
+      "name": "transfer_end",
+      "message": "TransferEnd",
+      "type": "0x8306",
+      "expect": "ok",
+      "note": "",
+      "frame": "06000000068303000000"
+    },
+    {
+      "name": "transfer_cancel_bad_path",
+      "message": "TransferCancel",
+      "type": "0x8307",
+      "expect": "ok",
+      "note": "",
+      "frame": "080000000783030000000300"
+    },
+    {
+      "name": "transfer_resume",
+      "message": "TransferResume",
+      "type": "0x8308",
+      "expect": "ok",
+      "note": "",
+      "frame": "12000000088303000000010000000000010000000000"
+    },
+    {
+      "name": "screen_info_two_monitors",
+      "message": "ScreenInfo",
+      "type": "0x8401",
+      "expect": "ok",
+      "note": "",
+      "frame": "4400000001840100000064000000c80000000200010000000000000000000000000a000040060000d0072e01bd0002000000000a000038ffffff8007000038040000e8030f022801"
+    },
+    {
+      "name": "screen_info_ack",
+      "message": "ScreenInfoAck",
+      "type": "0x0402",
+      "expect": "ok",
+      "note": "",
+      "frame": "06000000020401000000"
+    },
+    {
+      "name": "config_push",
+      "message": "ConfigPush",
+      "type": "0x0403",
+      "expect": "ok",
+      "note": "",
+      "frame": "1a000000030405000000000000000c0000007b22736368656d61223a317d"
+    },
+    {
+      "name": "unknown_noncritical",
+      "expect": "ignore",
+      "note": "unknown type without critical bit: skip the frame",
+      "frame": "05000000017f010203"
+    },
+    {
+      "name": "unknown_critical",
+      "expect": "violation",
+      "note": "unknown type with critical bit: Goodbye(PROTOCOL_VIOLATION)",
+      "frame": "0200000001ff"
+    },
+    {
+      "name": "appended_field",
+      "expect": "ok",
+      "note": "known type with extra trailing bytes: parse prefix (dx=3, dy=4), ignore the rest",
+      "frame": "1000000004812a0000000100000003000400aabb"
+    },
+    {
+      "name": "short_payload",
+      "expect": "violation",
+      "note": "Key payload one byte shorter than minimum",
+      "frame": "1f00000008810000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "bad_bool",
+      "expect": "violation",
+      "note": "bool must be 0 or 1",
+      "frame": "03000000118002"
+    },
+    {
+      "name": "bad_utf8",
+      "expect": "violation",
+      "note": "invalid UTF-8 in str",
+      "frame": "08000000038001000200c328"
+    },
+    {
+      "name": "control_too_large",
+      "expect": "frame_too_large",
+      "note": "length header above control maximum: reject before reading payload",
+      "frame": "010001000400"
+    },
+    {
+      "name": "length_below_minimum",
+      "expect": "violation",
+      "note": "length < 2 (no room for type)",
+      "frame": "0100000004"
+    }
+  ]
+}
