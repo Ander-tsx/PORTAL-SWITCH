@@ -632,6 +632,50 @@ async fn signal_rate<W: AsyncWrite + Unpin>(mut w: W, sh: Arc<Shared>) -> Result
     Ok(())
 }
 
+/// Paces the probe loop. Windows timers have ~15.6 ms granularity, so a 1 kHz tokio interval
+/// silently runs at a fraction of the rate there; on Windows we yield-spin to the deadline.
+struct ProbeClock {
+    #[cfg(not(windows))]
+    interval: tokio::time::Interval,
+    #[cfg(windows)]
+    next: Instant,
+    #[cfg(windows)]
+    period: Duration,
+}
+
+impl ProbeClock {
+    fn new(period: Duration) -> Self {
+        #[cfg(not(windows))]
+        {
+            let mut interval = tokio::time::interval(period);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            Self { interval }
+        }
+        #[cfg(windows)]
+        {
+            Self {
+                next: Instant::now(),
+                period,
+            }
+        }
+    }
+
+    async fn tick(&mut self) {
+        #[cfg(not(windows))]
+        {
+            self.interval.tick().await;
+        }
+        #[cfg(windows)]
+        {
+            while Instant::now() < self.next {
+                tokio::task::yield_now().await;
+            }
+            // Delay semantics: never burst to catch up.
+            self.next = self.next.max(Instant::now() - self.period) + self.period;
+        }
+    }
+}
+
 async fn client(a: Args) -> Result<String> {
     let initial_kbps = match a.bulk_rate {
         BulkRate::Fixed(mbps) => u64::from(mbps) * 1000,
@@ -738,8 +782,7 @@ async fn client(a: Args) -> Result<String> {
         Duration::from_secs(1)
     };
     let period = Duration::from_nanos(1_000_000_000 / a.rate);
-    let mut tick = tokio::time::interval(period);
-    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut tick = ProbeClock::new(period);
     let warmup_end = Instant::now() + warmup;
     let mut measure_start = None;
     let mut last_trace = Instant::now();
