@@ -6,6 +6,8 @@
 //! This crate will hold the types and state machines shared by the daemon and the UI
 //! (topology, routing, protocol messages). It must never depend on OS-specific code.
 
+pub mod layout;
+
 /// Version of this build, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
