@@ -74,7 +74,7 @@ pub struct Monitor {
 }
 
 /// The machine's display arrangement.
-pub trait Screens: Send {
+pub trait Screens: Send + Sync {
     /// Current monitors in global pixel coordinates.
     fn monitors(&self) -> Vec<Monitor>;
     /// Current cursor position in global coordinates.

@@ -9,8 +9,23 @@ repository.workspace = true
 license.workspace = true
 authors.workspace = true
 
+[lib]
+name = "portald"
+
+[[bin]]
+name = "portald"
+path = "src/main.rs"
+
 [dependencies]
 portal-core.workspace = true
+portal-net.workspace = true
+portal-platform.workspace = true
+portal-proto.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync", "signal"] }
+tracing = "0.1"
 
 [lints]
 workspace = true

@@ -143,7 +143,8 @@ impl Identity {
     }
 }
 
-pub(crate) fn hex(bytes: &[u8]) -> String {
+/// Lower-case hex encoding.
+pub fn hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
     bytes
         .iter()
@@ -153,7 +154,11 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
         })
 }
 
-pub(crate) fn unhex(text: &str) -> Result<Vec<u8>, Error> {
+/// Decode lower- or upper-case hex.
+///
+/// # Errors
+/// Odd length or a non-hex character.
+pub fn unhex(text: &str) -> Result<Vec<u8>, Error> {
     if !text.len().is_multiple_of(2) || !text.is_ascii() {
         return Err(Error::BadIdentityFile);
     }
