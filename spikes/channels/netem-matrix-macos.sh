@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Run the channel spike on loopback under emulated network conditions (macOS dummynet).
 # Must run as root (pf/dnctl); the spike binaries run as the invoking user.
 # Everything this script changes in pf/dummynet is undone on exit.

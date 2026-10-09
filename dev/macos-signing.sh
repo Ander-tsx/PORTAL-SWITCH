@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Stable local code-signing identity for macOS development builds.
 #
 # Why: macOS ties Accessibility / Input Monitoring grants to the code identity of the

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Build, bundle, sign and run the drag spike as a real .app (needed for drop-synthetic, which
 # posts mouse events and therefore requires Accessibility for this bundle).
 #

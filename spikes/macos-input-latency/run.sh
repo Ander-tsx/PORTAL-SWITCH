@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Build, bundle, sign and run the latency spike as a real .app so macOS attributes the
 # permissions to the app (not to the terminal).
 #

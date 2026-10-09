@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Spike: file drag & drop between machines — macOS side.
 //!
 //! Modes (logs to ~/Library/Logs/portalswitch-spike/drag.log and stdout):

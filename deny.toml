@@ -24,7 +24,7 @@ allow = [
 confidence-threshold = 0.93
 unused-allowed-license = "allow"
 
-# Workspace crates are not published and carry no license field.
+# Workspace crates declare Apache-2.0; private ones are still skipped by the check.
 [licenses.private]
 ignore = true
 

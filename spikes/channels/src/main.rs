@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Spike: input latency while bulk data loads the link, for three transports.
 //!
 //!   channels server [--bind 0.0.0.0:47000]

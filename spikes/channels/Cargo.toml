@@ -4,6 +4,7 @@ description = "Spike: input latency under bulk load for single TCP, dual TCP and
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "Apache-2.0"
 
 # Standalone: spikes are not part of the product workspace.
 [workspace]

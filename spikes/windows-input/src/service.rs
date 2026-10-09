@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Service model: a LocalSystem service launches a SYSTEM-token agent into the active console
 //! session. The agent follows the input desktop (Default <-> Winlogon/secure desktop) and proves
 //! it can inject there by jiggling the cursor once per second.

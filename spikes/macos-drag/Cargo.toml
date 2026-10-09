@@ -4,6 +4,7 @@ description = "Spike: detect file drags and discover drop folders with file prom
 version = "0.0.0"
 edition = "2024"
 publish = false
+license = "Apache-2.0"
 
 # Standalone: spikes are not part of the product workspace.
 [workspace]

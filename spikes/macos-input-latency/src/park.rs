@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Host-side cursor parking experiments for a background (agent) app.
 //!
 //! `park <secs> [bg] [hide] [decouple] [swallow] [edgewarp]`

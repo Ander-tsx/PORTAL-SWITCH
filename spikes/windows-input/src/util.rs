@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Shared helpers: clock, stats, wide strings, logging.
 
 use std::io::Write as _;

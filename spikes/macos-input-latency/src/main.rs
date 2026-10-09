@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Spike: input capture and injection latency on macOS.
 //!
 //! Modes (pass after `open -n -W <App> --args`):

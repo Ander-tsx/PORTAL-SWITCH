@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Spike: input capture/injection on Windows — latency, Raw Input under low-level hooks,
 //! desktops (secure desktop / UAC) and the service + session agent model.
 //!

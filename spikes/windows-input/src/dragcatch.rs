@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Drag source detection on Windows: a nearly invisible topmost strip on the right screen edge is
 //! registered as an OLE drop target, so any standard drag that reaches the edge is "caught" and
 //! its file list (CF_HDROP) logged. Mirrors the macOS `catch` mode of the drag spike.

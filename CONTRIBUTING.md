@@ -40,6 +40,23 @@ crate needs another permissive license, open a discussion before adding it to th
 Prefer few, well-maintained dependencies. Add shared versions under
 `[workspace.dependencies]` and reference them with `dep.workspace = true`.
 
+## Licensing of contributions
+
+The project is licensed under Apache-2.0. By submitting a contribution you agree it is
+licensed under the same terms (Apache-2.0 §5, "inbound = outbound"); no CLA is required.
+Sign off commits with `git commit -s` (Developer Certificate of Origin) to confirm you wrote
+the change or have the right to submit it. Do not paste code from projects with
+incompatible or unknown licenses.
+
+Every source file starts with:
+
+```
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+```
+
+(use `#` comments in shell/TOML/YAML). Branding rules for forks: [TRADEMARKS.md](TRADEMARKS.md).
+
 ## Commits
 
 [Conventional Commits](https://www.conventionalcommits.org):

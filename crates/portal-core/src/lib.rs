@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Platform-independent core of PortalSwitch.
 //!
 //! This crate will hold the types and state machines shared by the daemon and the UI

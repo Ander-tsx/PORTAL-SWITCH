@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! PortalSwitch daemon entry point.
 //!
 //! Placeholder until the daemon is implemented; it only reports its version.

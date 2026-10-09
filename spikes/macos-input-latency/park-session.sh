@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Guided session for the cursor-parking experiments. Each phase is announced by voice;
 # the observer notes what the on-screen cursor / Dock / hot corners do.
 #

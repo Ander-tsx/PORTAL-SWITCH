@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
 # Real-network matrix for the channel spike. Run on the client machine; the server runs on the
 # other machine (`channels server --bind 0.0.0.0:47000`).
 #

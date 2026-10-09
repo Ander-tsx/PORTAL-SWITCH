@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 The PortalSwitch Authors
+
 //! Session, elevation, integrity level and desktop information for the current process.
 
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
