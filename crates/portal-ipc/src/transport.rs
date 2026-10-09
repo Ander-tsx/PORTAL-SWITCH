@@ -41,8 +41,18 @@ impl Endpoint {
         }
         #[cfg(not(windows))]
         {
+            let path = dir.join("portald.sock");
+            // `sockaddr_un` paths are limited to ~104 bytes on macOS: fall back to a short,
+            // stable name derived from the directory when the natural one does not fit.
+            if path.as_os_str().len() < 100 {
+                return Self { path };
+            }
+            let mut hash: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
+            for byte in dir.to_string_lossy().bytes() {
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
+            }
             Self {
-                path: dir.join("portald.sock"),
+                path: std::env::temp_dir().join(format!("ps-{hash:016x}.sock")),
             }
         }
     }
