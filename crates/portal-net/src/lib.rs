@@ -5,9 +5,12 @@
 //! authentication, pairing codes and the link layer carrying protocol frames.
 
 mod error;
+pub mod frame;
 mod fsutil;
 pub mod identity;
 pub mod pairing;
+pub mod queue;
+pub mod session;
 pub mod spki;
 pub mod tls;
 pub mod trust;
