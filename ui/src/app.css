@@ -1,0 +1,178 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* Copyright 2026 The PortalSwitch Authors */
+
+:root {
+  --bg: #f6f7fd;
+  --surface: #ffffff;
+  --surface-2: #eef0fb;
+  --line: #dcdff3;
+  --fg: #14162b;
+  --muted: #5a5f82;
+  --accent: #5b4cf0;
+  --accent-2: #12a8cc;
+  --accent-fg: #ffffff;
+  --ok: #17a34a;
+  --warn: #b45309;
+  --danger: #dc2626;
+  --coffee: #ffdd00;
+  --coffee-fg: #1b1b1b;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgb(20 22 43 / 0.06), 0 6px 24px rgb(20 22 43 / 0.06);
+  color-scheme: light dark;
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0e1020;
+    --surface: #171a32;
+    --surface-2: #1f2344;
+    --line: #2a2f58;
+    --fg: #eceefb;
+    --muted: #a3a8c8;
+    --accent: #7c6ffc;
+    --accent-2: #19c3e6;
+    --shadow: 0 1px 2px rgb(0 0 0 / 0.3), 0 8px 28px rgb(0 0 0 / 0.25);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0 0 0.4rem;
+  line-height: 1.2;
+}
+h2 {
+  font-size: 1.25rem;
+}
+h3 {
+  font-size: 1rem;
+}
+p {
+  margin: 0 0 0.75rem;
+}
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 0.85rem;
+}
+
+button,
+input,
+select {
+  font: inherit;
+  color: inherit;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 0.5rem 0.9rem;
+}
+button:hover {
+  border-color: var(--accent);
+}
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+button.primary {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  color: var(--accent-fg);
+  border: 0;
+  font-weight: 600;
+}
+button.danger {
+  color: var(--danger);
+}
+button.coffee {
+  background: var(--coffee);
+  color: var(--coffee-fg);
+  border: 0;
+  font-weight: 600;
+}
+button.ghost {
+  background: transparent;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+input[type='text'],
+input[type='number'] {
+  width: 100%;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: 10px;
+  padding: 0.5rem 0.7rem;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 1rem 1.1rem;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.row.wrap {
+  flex-wrap: wrap;
+}
+.grow {
+  flex: 1;
+  min-width: 0;
+}
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+.badge.ok {
+  background: color-mix(in srgb, var(--ok) 18%, transparent);
+  color: var(--ok);
+}
+.badge.accent {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+  color: var(--accent);
+}
+
+.field {
+  display: grid;
+  gap: 0.25rem;
+}
+.field label,
+.field .label {
+  font-weight: 600;
+}
