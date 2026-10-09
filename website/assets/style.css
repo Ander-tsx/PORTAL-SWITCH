@@ -1,0 +1,29 @@
+:root{--bg:#0e1020;--fg:#eceefb;--muted:#a3a8c8;--card:#171a32;--line:#272b4d;--a:#6d5efc;--b:#19c3e6;--cta:#ffdd00;--ctafg:#1b1b1b}
+@media (prefers-color-scheme:light){:root{--bg:#f7f8ff;--fg:#14162b;--muted:#53587c;--card:#fff;--line:#dfe2f5}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+a{color:var(--b)}
+.wrap{max-width:960px;margin:0 auto;padding:0 20px}
+header{display:flex;align-items:center;justify-content:space-between;padding:18px 0}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:1.15rem;color:var(--fg);text-decoration:none}
+.brand img{width:34px;height:34px}
+nav a{margin-left:18px;color:var(--muted);text-decoration:none;font-size:.95rem}
+nav a:hover{color:var(--fg)}
+.hero{text-align:center;padding:64px 0 48px}
+h1{font-size:clamp(2rem,5vw,3.2rem);line-height:1.15;margin:0 0 16px}
+h1 span{background:linear-gradient(90deg,var(--a),var(--b));-webkit-background-clip:text;background-clip:text;color:transparent}
+.lead{max-width:640px;margin:0 auto 28px;color:var(--muted);font-size:1.15rem}
+.btns{display:flex;flex-wrap:wrap;gap:12px;justify-content:center}
+.btn{display:inline-block;padding:12px 22px;border-radius:12px;font-weight:600;text-decoration:none;border:1px solid var(--line);color:var(--fg);background:var(--card)}
+.btn.primary{background:linear-gradient(90deg,var(--a),var(--b));border:0;color:#fff}
+.btn.coffee{background:var(--cta);border:0;color:var(--ctafg)}
+.badge{display:inline-block;margin-bottom:18px;padding:4px 12px;border:1px solid var(--line);border-radius:999px;color:var(--muted);font-size:.85rem}
+.grid{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));padding:24px 0 48px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px}
+.card h3{margin:0 0 6px;font-size:1.05rem}
+.card p{margin:0;color:var(--muted);font-size:.97rem}
+section.support{text-align:center;padding:48px 20px;margin:24px 0;background:var(--card);border:1px solid var(--line);border-radius:20px}
+h2{margin:0 0 10px;font-size:1.6rem}
+.muted{color:var(--muted)}
+footer{padding:32px 0 48px;color:var(--muted);font-size:.88rem;text-align:center}
+footer a{color:var(--muted)}
