@@ -35,6 +35,8 @@ pub struct ServerHello {
 pub enum Request {
     Status,
     Paired,
+    /// Machines currently visible on the local network.
+    Discovered,
     Connect {
         address: String,
     },
@@ -136,6 +138,17 @@ pub struct PeerInfo {
     pub name: String,
 }
 
+/// A machine visible on the network (result element of `discovered`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveredInfo {
+    pub machine: String,
+    pub name: String,
+    pub addresses: Vec<String>,
+    pub port: u16,
+    pub is_host: bool,
+    pub paired: bool,
+}
+
 /// Result of `status`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StatusInfo {
@@ -168,6 +181,15 @@ pub enum Event {
     DialFailed {
         address: String,
         reason: String,
+    },
+    PeerDiscovered {
+        machine: String,
+        name: String,
+        addresses: Vec<String>,
+        port: u16,
+    },
+    PeerLost {
+        machine: String,
     },
 }
 

@@ -5,6 +5,7 @@
 //! authentication, pairing codes and the link layer carrying protocol frames.
 
 pub mod bridge;
+pub mod discovery;
 mod error;
 pub mod frame;
 mod fsutil;

@@ -10,6 +10,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+mdns-sd = "0.21.5"
 portal-core.workspace = true
 portal-proto.workspace = true
 rcgen = { version = "0.14.10", default-features = false, features = ["ring", "crypto"] }

@@ -51,6 +51,7 @@ async fn machine(name: &str, is_host: bool, pairing: PairingPolicy) -> Machine {
             link: LinkConfig::default(),
             pairing,
             bind: "127.0.0.1:0".parse().unwrap(),
+            discovery: false,
             ipc: Some(IpcOptions {
                 endpoint: endpoint.clone(),
                 token: token.clone(),

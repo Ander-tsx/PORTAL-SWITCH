@@ -45,6 +45,7 @@ async fn machine(name: &str, is_host: bool, width: u32, height: u32) -> Machine 
             pairing: PairingPolicy::Auto(true),
             bind: "127.0.0.1:0".parse().unwrap(),
             ipc: None,
+            discovery: false,
         },
         Platform {
             capture: Box::new(capture),

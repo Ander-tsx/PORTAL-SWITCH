@@ -72,6 +72,8 @@ pub struct DaemonOptions {
     pub bind: SocketAddr,
     /// Serve the local UI/CLI API; `None` disables it.
     pub ipc: Option<IpcOptions>,
+    /// Advertise on and browse the local network (mDNS).
+    pub discovery: bool,
 }
 
 /// Where and how the local API is served.
@@ -104,6 +106,17 @@ pub enum DaemonEvent {
     DialFailed {
         address: String,
         reason: String,
+    },
+    /// A machine appeared on the local network.
+    PeerDiscovered {
+        machine: MachineId,
+        name: String,
+        addresses: Vec<std::net::IpAddr>,
+        port: u16,
+    },
+    /// A machine left the local network.
+    PeerLost {
+        machine: MachineId,
     },
 }
 
@@ -144,6 +157,7 @@ impl PairingBroker {
         match self.policy {
             PairingPolicy::Auto(answer) => answer,
             PairingPolicy::Ask => {
+                tracing::info!(remote = %prompt.remote_name, "pairing requested");
                 let id = self.next.fetch_add(1, Ordering::Relaxed);
                 let (tx, rx) = oneshot::channel();
                 lock(&self.pending).insert(id, tx);
@@ -189,6 +203,8 @@ struct Shared {
     broker: Arc<PairingBroker>,
     shutdown: watch::Sender<bool>,
     stopped: AtomicBool,
+    discovered: Mutex<HashMap<MachineId, portal_net::discovery::Discovered>>,
+    discovery: Mutex<Option<portal_net::discovery::Discovery>>,
 }
 
 impl Shared {
@@ -379,6 +395,16 @@ impl DaemonHandle {
             .with_trust(|t| t.peers().map(|(id, p)| (id, p.name.clone())).collect())
     }
 
+    /// Machines currently visible on the local network, with whether each is already paired.
+    #[must_use]
+    pub fn discovered(&self) -> Vec<(portal_net::discovery::Discovered, bool)> {
+        let paired: Vec<MachineId> = self.paired().into_iter().map(|(id, _)| id).collect();
+        lock(&self.shared.discovered)
+            .values()
+            .map(|d| (d.clone(), paired.contains(&d.machine)))
+            .collect()
+    }
+
     /// Forget a paired machine and drop its link.
     ///
     /// # Errors
@@ -436,6 +462,7 @@ impl DaemonHandle {
         }
         let _ = self.shared.shutdown.send(true);
         lock(&self.shared.capture).stop();
+        lock(&self.shared.discovery).take(); // withdraws the advertisement
         self.shared.tick.notify_one();
     }
 }
@@ -477,6 +504,7 @@ pub async fn start(
         pairing,
         bind,
         ipc,
+        discovery,
     } = options;
     let me = identity.machine_id();
 
@@ -525,10 +553,13 @@ pub async fn start(
         broker,
         shutdown,
         stopped: AtomicBool::new(false),
+        discovered: Mutex::new(HashMap::new()),
+        discovery: Mutex::new(None),
     });
 
     let listener = TcpListener::bind(bind).await?;
     let addr = listener.local_addr()?;
+    tracing::info!(%addr, host = config.is_host, name = %config.machine_name, "daemon listening");
     let incoming = endpoint.serve(listener);
 
     tokio::spawn(dispatcher(shared.clone(), out_rx));
@@ -545,6 +576,23 @@ pub async fn start(
         endpoint: endpoint.clone(),
         addr,
     };
+    start_optional_services(&handle, &config, ipc, discovery, &shutdown_rx).await?;
+    Ok(handle)
+}
+
+/// Start the services that are optional or configuration driven: LAN discovery, the local API
+/// and the dialers for configured peers.
+async fn start_optional_services(
+    handle: &DaemonHandle,
+    config: &Config,
+    ipc: Option<IpcOptions>,
+    discovery: bool,
+    shutdown_rx: &watch::Receiver<bool>,
+) -> Result<(), DaemonError> {
+    let (shared, endpoint) = (&handle.shared, &handle.endpoint);
+    if discovery {
+        start_discovery(shared, endpoint, handle.addr.port(), shutdown_rx.clone());
+    }
     if let Some(ipc) = ipc {
         let listener = portal_ipc::transport::Listener::bind(&ipc.endpoint).await?;
         let service = Arc::new(crate::ipc::DaemonService::new(handle.clone()));
@@ -555,7 +603,7 @@ pub async fn start(
             shutdown_rx.clone(),
         ));
     }
-    for peer in config.peers {
+    for peer in &config.peers {
         if let Ok(address) = peer.address.parse::<SocketAddr>() {
             tokio::spawn(dial_loop(
                 shared.clone(),
@@ -565,7 +613,86 @@ pub async fn start(
             ));
         }
     }
-    Ok(handle)
+    Ok(())
+}
+
+/// Advertise, browse, and keep trusted machines connected automatically.
+///
+/// Both sides see each other; only the one with the lower machine ID dials, so a pair of
+/// machines does not race to connect to each other.
+fn start_discovery(
+    shared: &Arc<Shared>,
+    endpoint: &Endpoint,
+    port: u16,
+    stop: watch::Receiver<bool>,
+) {
+    use portal_net::discovery::{Advertisement, Discovery, DiscoveryEvent};
+
+    let config = lock(&shared.config).clone();
+    let ad = Advertisement {
+        machine: shared.me,
+        name: config.machine_name,
+        port,
+        is_host: shared.is_host,
+    };
+    let (handle, mut events) = match Discovery::start(&ad) {
+        Ok(started) => started,
+        Err(e) => {
+            tracing::warn!(error = %e, "LAN discovery unavailable; connect by address instead");
+            return;
+        }
+    };
+    *lock(&shared.discovery) = Some(handle);
+    let (shared, endpoint) = (shared.clone(), endpoint.clone());
+    tokio::spawn(async move {
+        let mut dialers: HashMap<MachineId, tokio::task::JoinHandle<()>> = HashMap::new();
+        while let Some(event) = events.recv().await {
+            match event {
+                DiscoveryEvent::Found(found) => {
+                    let machine = found.machine;
+                    let paired = endpoint.with_trust(|t| t.peers().any(|(id, _)| id == machine));
+                    let _ = shared.events.send(DaemonEvent::PeerDiscovered {
+                        machine,
+                        name: found.name.clone(),
+                        addresses: found.addresses.clone(),
+                        port: found.port,
+                    });
+                    let target = found
+                        .addresses
+                        .iter()
+                        .find(|a| a.is_ipv4())
+                        .or(found.addresses.first())
+                        .copied();
+                    lock(&shared.discovered).insert(machine, found.clone());
+                    if paired
+                        && shared.me < machine
+                        && !dialers.contains_key(&machine)
+                        && let Some(ip) = target
+                    {
+                        {
+                            let addr = SocketAddr::new(ip, found.port);
+                            dialers.insert(
+                                machine,
+                                tokio::spawn(dial_loop(
+                                    shared.clone(),
+                                    endpoint.clone(),
+                                    addr,
+                                    stop.clone(),
+                                )),
+                            );
+                        }
+                    }
+                }
+                DiscoveryEvent::Lost(machine) => {
+                    lock(&shared.discovered).remove(&machine);
+                    if let Some(task) = dialers.remove(&machine) {
+                        task.abort();
+                    }
+                    let _ = shared.events.send(DaemonEvent::PeerLost { machine });
+                }
+            }
+        }
+    });
 }
 
 async fn accept_links(
@@ -603,13 +730,14 @@ async fn dial_loop(
                 run_link(shared.clone(), link).await;
             }
             Err(ConnectError::Handshake(e)) if is_fatal(&e) => {
+                tracing::warn!(%addr, error = %e, "giving up on peer");
                 let _ = shared.events.send(DaemonEvent::DialFailed {
                     address: addr.to_string(),
                     reason: e.to_string(),
                 });
                 return;
             }
-            Err(_) => {}
+            Err(e) => tracing::debug!(%addr, error = %e, "connect failed, will retry"),
         }
         let wait = BACKOFF[attempt.min(BACKOFF.len() - 1)];
         attempt += 1;
@@ -690,6 +818,7 @@ async fn ticker(shared: Arc<Shared>, mut stop: watch::Receiver<bool>) {
 async fn run_link(shared: Arc<Shared>, mut link: Link) {
     let machine = link.remote.machine_id;
     let name = link.remote.machine_name.clone();
+    tracing::info!(peer = %name, ?machine, "link established");
     // The host of a session sends input; only it routes.
     let we_are_host = shared.is_host;
     lock(&shared.links).insert(

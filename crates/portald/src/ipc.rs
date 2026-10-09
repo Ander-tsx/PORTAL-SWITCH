@@ -3,7 +3,7 @@
 
 //! Adapter from the local API to the running daemon.
 
-use portal_ipc::proto::{ErrorBody, Event, PeerInfo, Request, StatusInfo, code};
+use portal_ipc::proto::{DiscoveredInfo, ErrorBody, Event, PeerInfo, Request, StatusInfo, code};
 use portal_ipc::server::{BoxFuture, Service};
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -79,6 +79,20 @@ fn convert(event: DaemonEvent) -> Event {
             machine: format_machine_id(machine),
         },
         DaemonEvent::DialFailed { address, reason } => Event::DialFailed { address, reason },
+        DaemonEvent::PeerDiscovered {
+            machine,
+            name,
+            addresses,
+            port,
+        } => Event::PeerDiscovered {
+            machine: format_machine_id(machine),
+            name,
+            addresses: addresses.iter().map(ToString::to_string).collect(),
+            port,
+        },
+        DaemonEvent::PeerLost { machine } => Event::PeerLost {
+            machine: format_machine_id(machine),
+        },
     }
 }
 
@@ -103,6 +117,21 @@ impl Service for DaemonService {
                         .map(|(id, name)| PeerInfo {
                             machine: format_machine_id(id),
                             name,
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+                Request::Discovered => to_value(
+                    &self
+                        .handle
+                        .discovered()
+                        .into_iter()
+                        .map(|(d, paired)| DiscoveredInfo {
+                            machine: format_machine_id(d.machine),
+                            name: d.name,
+                            addresses: d.addresses.iter().map(ToString::to_string).collect(),
+                            port: d.port,
+                            is_host: d.is_host,
+                            paired,
                         })
                         .collect::<Vec<_>>(),
                 ),
