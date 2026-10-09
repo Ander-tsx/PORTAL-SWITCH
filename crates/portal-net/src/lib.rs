@@ -8,6 +8,7 @@ mod error;
 pub mod frame;
 mod fsutil;
 pub mod identity;
+pub mod link;
 pub mod pairing;
 pub mod queue;
 pub mod session;
