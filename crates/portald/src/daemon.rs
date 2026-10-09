@@ -70,6 +70,16 @@ pub struct DaemonOptions {
     pub pairing: PairingPolicy,
     /// Address to listen on; port 0 picks a free one.
     pub bind: SocketAddr,
+    /// Serve the local UI/CLI API; `None` disables it.
+    pub ipc: Option<IpcOptions>,
+}
+
+/// Where and how the local API is served.
+#[derive(Debug, Clone)]
+pub struct IpcOptions {
+    pub endpoint: portal_ipc::Endpoint,
+    /// Token clients must present; see [`portal_ipc::token`].
+    pub token: String,
 }
 
 /// Notifications for the UI / IPC layer.
@@ -381,6 +391,44 @@ impl DaemonHandle {
         Ok(removed)
     }
 
+    /// A copy of the current configuration.
+    #[must_use]
+    pub fn config(&self) -> Config {
+        lock(&self.shared.config).clone()
+    }
+
+    /// Replace the configuration, apply what can change live and persist it.
+    ///
+    /// Returns `true` when the new configuration needs a restart to take full effect (role or
+    /// listen port changed).
+    ///
+    /// # Errors
+    /// The new layout is invalid.
+    pub fn set_config(&self, new: Config) -> Result<bool, ConfigError> {
+        let me = self.shared.me;
+        let mut new = new;
+        // Our own screen always reflects the real display.
+        let _ = ensure_own_screen(&mut new, me, &*self.shared.screens);
+        let ready: Vec<MachineId> = lock(&self.shared.links)
+            .iter()
+            .filter(|(_, l)| l.ready)
+            .map(|(id, _)| *id)
+            .collect();
+        let layout = new.layout(|id| id == me || ready.contains(&id))?;
+        let restart = {
+            let mut config = lock(&self.shared.config);
+            let restart = config.is_host != new.is_host || config.listen_port != new.listen_port;
+            *config = new.clone();
+            restart
+        };
+        self.shared.persist_config();
+        if self.shared.is_host {
+            self.shared.route(Event::SetLayout(layout));
+            self.shared.route(Event::SetConfig(new.switch.to_core()));
+        }
+        Ok(restart)
+    }
+
     /// Stop the daemon: close links, stop capturing.
     pub fn shutdown(&self) {
         if self.shared.stopped.swap(true, Ordering::SeqCst) {
@@ -390,6 +438,26 @@ impl DaemonHandle {
         lock(&self.shared.capture).stop();
         self.shared.tick.notify_one();
     }
+}
+
+/// Make sure our own screen is in the layout with its real size.
+fn ensure_own_screen(config: &mut Config, me: MachineId, screens: &dyn Screens) -> Option<()> {
+    let (_, width, height) = bounding_box(&screens.monitors())?;
+    let my_id = format_machine_id(me);
+    match config.layout.iter_mut().find(|s| s.machine_id == my_id) {
+        Some(s) => (s.width, s.height) = (width, height),
+        None => config.layout.insert(
+            0,
+            ScreenConfig {
+                machine_id: my_id,
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+        ),
+    }
+    Some(())
 }
 
 /// Start the daemon.
@@ -408,26 +476,11 @@ pub async fn start(
         link,
         pairing,
         bind,
+        ipc,
     } = options;
     let me = identity.machine_id();
 
-    // Make sure our own screen is in the layout with its real size.
-    let monitors = platform.screens.monitors();
-    let (_, width, height) = bounding_box(&monitors).ok_or(DaemonError::NoDisplay)?;
-    let my_id = format_machine_id(me);
-    match config.layout.iter_mut().find(|s| s.machine_id == my_id) {
-        Some(s) => (s.width, s.height) = (width, height),
-        None => config.layout.insert(
-            0,
-            ScreenConfig {
-                machine_id: my_id,
-                x: 0,
-                y: 0,
-                width,
-                height,
-            },
-        ),
-    }
+    ensure_own_screen(&mut config, me, &*platform.screens).ok_or(DaemonError::NoDisplay)?;
     let layout = config.layout(|id| id == me)?;
     let router = Router::new(me, layout, config.switch.to_core());
 
@@ -492,6 +545,16 @@ pub async fn start(
         endpoint: endpoint.clone(),
         addr,
     };
+    if let Some(ipc) = ipc {
+        let listener = portal_ipc::transport::Listener::bind(&ipc.endpoint).await?;
+        let service = Arc::new(crate::ipc::DaemonService::new(handle.clone()));
+        tokio::spawn(portal_ipc::server::serve(
+            listener,
+            service,
+            ipc.token,
+            shutdown_rx.clone(),
+        ));
+    }
     for peer in config.peers {
         if let Ok(address) = peer.address.parse::<SocketAddr>() {
             tokio::spawn(dial_loop(

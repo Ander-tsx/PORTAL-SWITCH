@@ -1,0 +1,20 @@
+[package]
+name = "portal-ipc"
+description = "Local IPC between the PortalSwitch daemon and its UI / tools: protocol types, server and client."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+ring = "0.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1.53.2", features = ["rt", "macros", "net", "io-util", "time", "sync", "fs"] }
+
+[lints]
+workspace = true

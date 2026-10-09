@@ -19,6 +19,7 @@ path = "src/main.rs"
 [dependencies]
 portal-config.workspace = true
 portal-core.workspace = true
+portal-ipc.workspace = true
 portal-net.workspace = true
 portal-platform.workspace = true
 portal-proto.workspace = true

@@ -14,6 +14,7 @@ repository = "https://github.com/Ander-tsx/PORTAL-SWITCH"
 [workspace.dependencies]
 portal-config = { path = "crates/portal-config" }
 portal-core = { path = "crates/portal-core" }
+portal-ipc = { path = "crates/portal-ipc" }
 portal-proto = { path = "crates/portal-proto" }
 portal-net = { path = "crates/portal-net" }
 portal-platform = { path = "crates/portal-platform" }

@@ -263,6 +263,17 @@ name = "portal-core"
 version = "0.0.0"
 
 [[package]]
+name = "portal-ipc"
+version = "0.0.0"
+dependencies = [
+ "ring",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "portal-net"
 version = "0.0.0"
 dependencies = [
@@ -300,6 +311,7 @@ version = "0.0.0"
 dependencies = [
  "portal-config",
  "portal-core",
+ "portal-ipc",
  "portal-net",
  "portal-platform",
  "portal-proto",

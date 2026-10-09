@@ -44,6 +44,7 @@ async fn machine(name: &str, is_host: bool, width: u32, height: u32) -> Machine 
             link: LinkConfig::default(),
             pairing: PairingPolicy::Auto(true),
             bind: "127.0.0.1:0".parse().unwrap(),
+            ipc: None,
         },
         Platform {
             capture: Box::new(capture),

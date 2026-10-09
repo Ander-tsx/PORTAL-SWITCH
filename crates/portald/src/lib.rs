@@ -8,3 +8,4 @@ pub mod config {
     pub use portal_config::*;
 }
 pub mod daemon;
+pub mod ipc;
