@@ -249,6 +249,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
+name = "portal-config"
+version = "0.0.0"
+dependencies = [
+ "portal-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "portal-core"
 version = "0.0.0"
 
@@ -288,6 +298,7 @@ dependencies = [
 name = "portald"
 version = "0.0.0"
 dependencies = [
+ "portal-config",
  "portal-core",
  "portal-net",
  "portal-platform",

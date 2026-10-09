@@ -2,6 +2,9 @@
 // Copyright 2026 The PortalSwitch Authors
 
 //! User configuration: a versioned JSON document, loaded with defaults and saved atomically.
+//!
+//! This crate is shared by the daemon, the command-line tools and the UI so they all agree on
+//! the document's shape.
 
 use std::fs;
 use std::io;
@@ -9,7 +12,6 @@ use std::path::{Path, PathBuf};
 
 use portal_core::gate::{Corners, SwitchConfig, group};
 use portal_core::layout::{Layout, LayoutError, MachineId, Rect, Screen};
-use portal_net::identity::{hex, unhex};
 use serde::{Deserialize, Serialize};
 
 /// Default TCP port PortalSwitch listens on.
@@ -196,12 +198,32 @@ impl Config {
     }
 }
 
+fn hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes
+        .iter()
+        .fold(String::with_capacity(bytes.len() * 2), |mut s, b| {
+            let _ = write!(s, "{b:02x}");
+            s
+        })
+}
+
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) || !text.is_ascii() {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&text[i..i + 2], 16).ok())
+        .collect()
+}
+
 /// Parse a hex machine ID.
 ///
 /// # Errors
 /// Not 32 hex digits.
 pub fn parse_machine_id(text: &str) -> Result<MachineId, ConfigError> {
-    let bytes = unhex(text).map_err(|_| ConfigError::MachineId(text.to_owned()))?;
+    let bytes = unhex(text).ok_or_else(|| ConfigError::MachineId(text.to_owned()))?;
     let id: [u8; 16] = bytes
         .try_into()
         .map_err(|_| ConfigError::MachineId(text.to_owned()))?;

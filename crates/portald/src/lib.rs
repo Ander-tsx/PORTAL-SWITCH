@@ -3,5 +3,8 @@
 
 //! The PortalSwitch daemon: networking, routing and platform glue.
 
-pub mod config;
+/// Configuration model (re-exported from `portal-config`).
+pub mod config {
+    pub use portal_config::*;
+}
 pub mod daemon;
