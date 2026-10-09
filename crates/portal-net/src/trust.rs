@@ -75,6 +75,15 @@ impl TrustStore {
         })
     }
 
+    /// A detached in-memory copy (used for read-only decisions while a handshake runs).
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        Self {
+            path: None,
+            peers: self.peers.clone(),
+        }
+    }
+
     /// Classify a connecting machine.
     #[must_use]
     pub fn check(&self, machine: MachineId, spki_sha256: &[u8; 32]) -> TrustState {

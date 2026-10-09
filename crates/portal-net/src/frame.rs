@@ -41,6 +41,13 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
         }
     }
 
+    /// Like [`FrameReader::new`], starting with bytes that were already read from `inner`.
+    pub fn with_buffer(inner: R, channel: Channel, buffered: Vec<u8>) -> Self {
+        let mut reader = Self::new(inner, channel);
+        reader.buf = buffered;
+        reader
+    }
+
     /// Wait for the next complete frame.
     ///
     /// # Errors
@@ -69,6 +76,14 @@ impl<R: AsyncRead + Unpin> FrameReader<R> {
             }
             self.buf.extend_from_slice(&self.chunk[..n]);
         }
+    }
+
+    /// Give back the underlying stream (buffered but unread bytes are discarded).
+    ///
+    /// Only call this when nothing more is expected to be buffered, e.g. right after a handshake
+    /// in which the peer sends nothing until we do.
+    pub fn into_parts(self) -> (R, Vec<u8>) {
+        (self.inner, self.buf[self.start..].to_vec())
     }
 
     /// Next *known* message; frames of unknown non-critical types are skipped.
@@ -109,6 +124,11 @@ impl<W: AsyncWrite + Unpin> FrameWriter<W> {
         self.inner.write_all(&self.scratch).await?;
         self.inner.flush().await?;
         Ok(())
+    }
+
+    /// Give back the underlying stream.
+    pub fn into_inner(self) -> W {
+        self.inner
     }
 
     /// Shut the write side down.

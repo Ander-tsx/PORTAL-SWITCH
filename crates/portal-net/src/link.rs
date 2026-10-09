@@ -22,6 +22,34 @@ pub type BoxRead = Box<dyn AsyncRead + Send + Unpin>;
 /// See [`BoxRead`].
 pub type BoxWrite = Box<dyn AsyncWrite + Send + Unpin>;
 
+/// The two halves of one channel's byte stream.
+pub struct Streams {
+    pub read: BoxRead,
+    /// Bytes already read from `read` but not yet consumed as frames (left over from a handshake).
+    pub buffered: Vec<u8>,
+    pub write: BoxWrite,
+}
+
+impl Streams {
+    /// Streams with nothing buffered.
+    #[must_use]
+    pub fn new(read: BoxRead, write: BoxWrite) -> Self {
+        Self {
+            read,
+            buffered: Vec::new(),
+            write,
+        }
+    }
+}
+
+impl std::fmt::Debug for Streams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Streams")
+            .field("buffered", &self.buffered.len())
+            .finish_non_exhaustive()
+    }
+}
+
 /// Timing parameters.
 #[derive(Debug, Clone, Copy)]
 pub struct LinkConfig {
@@ -198,6 +226,9 @@ pub struct Link {
     control: ControlSender,
     bulk: BulkSender,
     events: mpsc::Receiver<LinkEvent>,
+    /// Dropped with the link (e.g. to release a registry entry).
+    #[allow(dead_code)] // held only for its Drop
+    guard: Option<Box<dyn std::any::Any + Send>>,
 }
 
 impl Link {
@@ -205,8 +236,8 @@ impl Link {
     #[must_use]
     pub fn start(
         established: Established,
-        control: (BoxRead, BoxWrite),
-        bulk: (BoxRead, BoxWrite),
+        control: Streams,
+        bulk: Streams,
         config: LinkConfig,
     ) -> Self {
         let (closing, closing_rx) = watch::channel(None);
@@ -223,12 +254,12 @@ impl Link {
 
         let remote_is_peer = !established.remote.is_host;
         tokio::spawn(control_writer(
-            control.1,
+            control.write,
             shared.clone(),
             closing_rx.clone(),
         ));
         tokio::spawn(reader(
-            control.0,
+            (control.read, control.buffered),
             Channel::Control,
             shared.clone(),
             events_tx.clone(),
@@ -236,7 +267,7 @@ impl Link {
             remote_is_peer,
         ));
         tokio::spawn(reader(
-            bulk.0,
+            (bulk.read, bulk.buffered),
             Channel::Bulk,
             shared.clone(),
             events_tx.clone(),
@@ -254,11 +285,17 @@ impl Link {
                 stall_after: config.stall_after,
             },
             bulk: BulkSender {
-                writer: Arc::new(tokio::sync::Mutex::new(FrameWriter::new(bulk.1))),
+                writer: Arc::new(tokio::sync::Mutex::new(FrameWriter::new(bulk.write))),
                 shared,
             },
             events,
+            guard: None,
         }
+    }
+
+    /// Keep `guard` alive for as long as the link exists.
+    pub fn attach_guard(&mut self, guard: Box<dyn std::any::Any + Send>) {
+        self.guard = Some(guard);
     }
 
     /// Handle for sending control messages.
@@ -328,14 +365,14 @@ async fn control_writer(
 }
 
 async fn reader(
-    input: BoxRead,
+    input: (BoxRead, Vec<u8>),
     channel: Channel,
     shared: Arc<Shared>,
     events: mpsc::Sender<LinkEvent>,
     mut closing: watch::Receiver<Option<CloseReason>>,
     remote_is_peer: bool,
 ) {
-    let mut reader = FrameReader::new(input, channel);
+    let mut reader = FrameReader::with_buffer(input.0, channel, input.1);
     loop {
         let frame = tokio::select! {
             frame = reader.read() => frame,
@@ -445,4 +482,11 @@ async fn announce_close(
     };
     // Let the writer say goodbye before the owner reacts.
     let _ = events.send(LinkEvent::Closed(reason)).await;
+}
+
+impl Drop for Link {
+    /// Dropping the link ends the session politely.
+    fn drop(&mut self) {
+        self.control.close();
+    }
 }

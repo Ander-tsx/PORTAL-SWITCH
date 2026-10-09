@@ -8,7 +8,7 @@
 use std::time::Duration;
 
 use portal_core::layout::MachineId;
-use portal_net::link::{BoxRead, BoxWrite, CloseReason, Link, LinkConfig, LinkEvent};
+use portal_net::link::{BoxRead, BoxWrite, CloseReason, Link, LinkConfig, LinkEvent, Streams};
 use portal_net::session::{Established, RemoteInfo};
 use portal_proto::{Message, MouseMotion, PairConfirm, Ping, ReleaseAll, goodbye};
 use tokio::io::{duplex, split};
@@ -30,13 +30,15 @@ fn established(remote_is_host: bool) -> Established {
     }
 }
 
-type Half = (BoxRead, BoxWrite);
-
-fn pipe(buffer: usize) -> (Half, Half) {
+fn pipe(buffer: usize) -> (Streams, Streams) {
     let (a, b) = duplex(buffer);
     let (ar, aw) = split(a);
     let (br, bw) = split(b);
-    ((Box::new(ar), Box::new(aw)), (Box::new(br), Box::new(bw)))
+    let ar: BoxRead = Box::new(ar);
+    let aw: BoxWrite = Box::new(aw);
+    let br: BoxRead = Box::new(br);
+    let bw: BoxWrite = Box::new(bw);
+    (Streams::new(ar, aw), Streams::new(br, bw))
 }
 
 /// A host link and a peer link wired together.
@@ -131,14 +133,9 @@ async fn healthy_links_stay_up_through_pings() {
 #[tokio::test(start_paused = true)]
 async fn a_silent_peer_is_declared_dead_after_three_intervals() {
     // The far end exists (so writes succeed) but never answers.
-    let ((control_r, control_w), _silent_control) = pipe(4096);
-    let ((bulk_r, bulk_w), _silent_bulk) = pipe(4096);
-    let mut link = Link::start(
-        established(false),
-        (control_r, control_w),
-        (bulk_r, bulk_w),
-        LinkConfig::default(),
-    );
+    let (control, _silent_control) = pipe(4096);
+    let (bulk, _silent_bulk) = pipe(4096);
+    let mut link = Link::start(established(false), control, bulk, LinkConfig::default());
     let started = tokio::time::Instant::now();
     assert_eq!(closed(&mut link).await, CloseReason::Timeout);
     let waited = started.elapsed();

@@ -143,14 +143,17 @@ fn identity_parts(identity: &Identity) -> (Vec<CertificateDer<'static>>, Private
 ///
 /// # Errors
 /// The identity's key or certificate was rejected by rustls.
-pub fn server_config(identity: &Identity, alpn: &[u8]) -> Result<Arc<rustls::ServerConfig>, Error> {
+pub fn server_config(
+    identity: &Identity,
+    alpns: &[&[u8]],
+) -> Result<Arc<rustls::ServerConfig>, Error> {
     let provider = provider();
     let (certs, key) = identity_parts(identity);
     let mut config = rustls::ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_client_cert_verifier(Arc::new(AcceptAnyPeer(provider)))
         .with_single_cert(certs, key)?;
-    config.alpn_protocols = vec![alpn.to_vec()];
+    config.alpn_protocols = alpns.iter().map(|a| a.to_vec()).collect();
     Ok(Arc::new(config))
 }
 

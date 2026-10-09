@@ -20,7 +20,7 @@ struct Session {
 /// Run one TLS handshake between `client` and `server` and derive each side's view.
 async fn handshake(client: &Identity, server: &Identity) -> (Session, Session) {
     let (c_io, s_io) = duplex(64 * 1024);
-    let acceptor = TlsAcceptor::from(server_config(server, ALPN_CONTROL).unwrap());
+    let acceptor = TlsAcceptor::from(server_config(server, &[ALPN_CONTROL]).unwrap());
     let connector = TlsConnector::from(client_config(client, ALPN_CONTROL).unwrap());
     let name = ServerName::try_from(SERVER_NAME).unwrap();
 
