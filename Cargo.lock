@@ -369,6 +369,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-platform-macos"
+version = "0.0.0"
+dependencies = [
+ "portal-core",
+ "portal-platform",
+]
+
+[[package]]
 name = "portal-proto"
 version = "0.0.0"
 dependencies = [
