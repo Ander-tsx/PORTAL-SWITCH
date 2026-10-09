@@ -149,6 +149,7 @@ async fn run(paths: &Paths, args: &[String]) -> Result<(), String> {
     }
 }
 
+#[allow(clippy::needless_pass_by_value)] // used as a `map_err` function pointer
 fn err(e: portal_ipc::ClientError) -> String {
     e.to_string()
 }

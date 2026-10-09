@@ -37,5 +37,8 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 [target.'cfg(target_os = "macos")'.dependencies]
 portal-platform-macos.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+portal-platform-windows.workspace = true
+
 [lints]
 workspace = true

@@ -19,6 +19,7 @@ portal-proto = { path = "crates/portal-proto" }
 portal-net = { path = "crates/portal-net" }
 portal-platform = { path = "crates/portal-platform" }
 portal-platform-macos = { path = "crates/portal-platform-macos" }
+portal-platform-windows = { path = "crates/portal-platform-windows" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"

@@ -193,7 +193,19 @@ fn platform(is_host: bool) -> Result<Platform, String> {
     })
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(windows)]
+fn platform(_is_host: bool) -> Result<Platform, String> {
+    use portal_platform_windows::{WinCapture, WinInjector, WinScreens, enable_dpi_awareness};
+
+    enable_dpi_awareness();
+    Ok(Platform {
+        capture: Box::new(WinCapture::new()),
+        injector: Box::new(WinInjector::new()),
+        screens: Box::new(WinScreens),
+    })
+}
+
+#[cfg(not(any(target_os = "macos", windows)))]
 fn platform(_is_host: bool) -> Result<Platform, String> {
     Err("no input backend is available for this operating system yet".into())
 }
