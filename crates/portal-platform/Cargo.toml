@@ -1,0 +1,17 @@
+[package]
+name = "portal-platform"
+description = "Platform abstraction traits for PortalSwitch plus an in-process fake backend for headless tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+repository.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+portal-core.workspace = true
+thiserror = "2"
+
+[lints]
+workspace = true

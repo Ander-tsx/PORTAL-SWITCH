@@ -259,6 +259,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "portal-platform"
+version = "0.0.0"
+dependencies = [
+ "portal-core",
+ "thiserror",
+]
+
+[[package]]
 name = "portal-proto"
 version = "0.0.0"
 dependencies = [

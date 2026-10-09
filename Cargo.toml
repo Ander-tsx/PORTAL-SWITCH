@@ -15,6 +15,7 @@ repository = "https://github.com/Ander-tsx/PORTAL-SWITCH"
 portal-core = { path = "crates/portal-core" }
 portal-proto = { path = "crates/portal-proto" }
 portal-net = { path = "crates/portal-net" }
+portal-platform = { path = "crates/portal-platform" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
