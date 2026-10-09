@@ -13,6 +13,8 @@ repository = "https://github.com/Ander-tsx/PORTAL-SWITCH"
 
 [workspace.dependencies]
 portal-core = { path = "crates/portal-core" }
+portal-proto = { path = "crates/portal-proto" }
+portal-net = { path = "crates/portal-net" }
 
 [workspace.lints.rust]
 unsafe_code = "deny"
