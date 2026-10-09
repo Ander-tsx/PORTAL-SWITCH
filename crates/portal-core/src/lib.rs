@@ -7,7 +7,9 @@
 //! (topology, routing, protocol messages). It must never depend on OS-specific code.
 
 pub mod gate;
+pub mod input;
 pub mod layout;
+pub mod peer;
 
 /// Version of this build, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
