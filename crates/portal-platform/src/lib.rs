@@ -7,6 +7,7 @@
 //! module provides an in-process backend so the whole daemon can run headlessly in CI.
 
 pub mod fake;
+pub mod keymap;
 
 use portal_core::input::InputEvent;
 use portal_core::layout::Point;
