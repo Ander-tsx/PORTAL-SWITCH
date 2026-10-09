@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 The PortalSwitch Authors
+name: Build artifacts
+
+# Manual: builds portald and portalctl for testing on real machines.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            os: macos-latest
+            ext: ""
+          - name: windows-x64
+            os: windows-latest
+            ext: ".exe"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --release --locked -p portald
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir dist
+          cp target/release/portald${{ matrix.ext }} target/release/portalctl${{ matrix.ext }} dist/
+          cp LICENSE NOTICE THIRD_PARTY_NOTICES.md dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: portalswitch-${{ matrix.name }}
+          path: dist/
