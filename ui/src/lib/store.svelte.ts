@@ -4,6 +4,7 @@
 import type { Backend, Config, DaemonEvent, DiscoveredInfo, PeerInfo, StatusInfo } from './api'
 import { detectLang, translator, type Lang } from './i18n'
 import { mockBackend } from './mock'
+import { hasShell, shellBackend } from './shell'
 import { hasTauri, tauriBackend } from './tauri'
 
 export interface PairingPrompt {
@@ -25,11 +26,14 @@ class AppState {
   error = $state<string | undefined>()
   notice = $state<string | undefined>()
   version = $state('')
+  demo = $state(false)
+  private timer: ReturnType<typeof setInterval> | undefined
+  private stopEvents: (() => void) | undefined
 
   t = $derived(translator(this.lang))
 
   constructor() {
-    this.backend = hasTauri() ? tauriBackend() : mockBackend()
+    this.backend = hasShell() ? shellBackend() : hasTauri() ? tauriBackend() : mockBackend()
   }
 
   /** Name of any known machine, falling back to a short ID. */
@@ -43,10 +47,19 @@ class AppState {
   }
 
   async start() {
-    this.backend.onEvent((e) => this.onEvent(e))
+    this.stopEvents = this.backend.onEvent((e) => this.onEvent(e))
     this.version = await this.backend.version().catch(() => '')
     await this.refresh()
-    setInterval(() => void this.refresh(), 5000)
+    if (!this.timer) this.timer = setInterval(() => void this.refresh(), 5000)
+  }
+
+  /** Explore the interface with made-up data while no daemon is running. */
+  async useDemo() {
+    this.stopEvents?.()
+    this.backend = mockBackend()
+    this.demo = true
+    this.config = undefined
+    await this.start()
   }
 
   async refresh() {

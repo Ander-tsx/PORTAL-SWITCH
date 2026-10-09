@@ -45,8 +45,10 @@
     <div class="card offline" role="status">
       <h3>{t('daemonDown')}</h3>
       <p class="muted">{t('daemonDownHelp')}</p>
+      <button onclick={() => app.useDemo()}>{t('tryDemo')}</button>
     </div>
   {:else}
+    {#if app.demo}<p class="badge accent demo" role="status">{t('demoBanner')}</p>{/if}
     <main>
       {#if tab === 'machines'}<Machines />{/if}
       {#if tab === 'layout'}<LayoutEditor />{/if}
@@ -107,6 +109,9 @@
     color: var(--fg);
     box-shadow: var(--shadow);
     font-weight: 600;
+  }
+  .demo {
+    margin-bottom: 0.75rem;
   }
   .offline {
     text-align: center;

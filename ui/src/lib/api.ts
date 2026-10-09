@@ -68,7 +68,7 @@ export type DaemonEvent =
 
 /** Everything the UI needs from the daemon. Implemented over Tauri and by a mock for development. */
 export interface Backend {
-  readonly kind: 'tauri' | 'mock'
+  readonly kind: 'tauri' | 'shell' | 'mock'
   status(): Promise<StatusInfo>
   paired(): Promise<PeerInfo[]>
   discovered(): Promise<DiscoveredInfo[]>
