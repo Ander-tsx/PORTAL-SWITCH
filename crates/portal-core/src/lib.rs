@@ -10,6 +10,7 @@ pub mod gate;
 pub mod input;
 pub mod layout;
 pub mod peer;
+pub mod router;
 
 /// Version of this build, as declared in the workspace manifest.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
