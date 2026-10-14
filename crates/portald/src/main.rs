@@ -194,6 +194,7 @@ fn platform(is_host: bool) -> Result<Platform, String> {
 }
 
 #[cfg(windows)]
+#[allow(clippy::unnecessary_wraps)] // same signature as the other platforms
 fn platform(_is_host: bool) -> Result<Platform, String> {
     use portal_platform_windows::{WinCapture, WinInjector, WinScreens, enable_dpi_awareness};
 
