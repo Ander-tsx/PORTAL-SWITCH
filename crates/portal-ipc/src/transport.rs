@@ -139,7 +139,7 @@ mod imp {
         /// # Errors
         /// Another daemon owns the pipe, or it cannot be created.
         // Async to match the Unix listener, whose bind awaits.
-        #[allow(clippy::unused_async)]
+        #[allow(clippy::unused_async, clippy::unused_async_trait_impl)]
         pub async fn bind(endpoint: &Endpoint) -> io::Result<Self> {
             let next = create(&endpoint.path, true)?;
             Ok(Self {
